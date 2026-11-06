@@ -1,0 +1,21 @@
+<!doctype html><html><head><meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; connect-src 'none'; frame-src 'none'; base-uri 'none'"></head><body><script>
+'use strict';for(const n of ['log','info','warn','error','debug'])console[n]=function(){};
+const peers=new Map(),channels=new Map();let channelSequence=-1;
+const post=m=>window.rtcNative.post(JSON.stringify(m));
+const b64=b=>{let s='';const a=new Uint8Array(b);for(let i=0;i<a.length;i+=8192)s+=String.fromCharCode(...a.subarray(i,i+8192));return btoa(s)};
+const bind=(peer,id,channel)=>{channels.set(peer+':'+id,channel);channel.binaryType='arraybuffer';channel.onopen=()=>post({type:'open',peer,channel:id});channel.onclose=()=>post({type:'close',peer,channel:id});channel.onerror=()=>post({type:'error',peer,channel:id});channel.onmessage=e=>post({type:'data',peer,channel:id,data:typeof e.data==='string'?e.data:b64(e.data),binary:typeof e.data!=='string'})};
+window.rtcCommand=async m=>{try{let p=peers.get(m.peer),v;
+if(m.operation==='create'){p=new RTCPeerConnection(m.payload);peers.set(m.peer,p);const state=()=>post({type:'state',peer:m.peer,connectionState:p.connectionState,iceConnectionState:p.iceConnectionState,iceGatheringState:p.iceGatheringState,signalingState:p.signalingState});p.onconnectionstatechange=state;p.oniceconnectionstatechange=state;p.onicegatheringstatechange=state;p.onsignalingstatechange=state;p.onicecandidate=e=>post({type:'candidate',peer:m.peer,candidate:e.candidate?e.candidate.toJSON():null});p.ondatachannel=e=>{const id=channelSequence--;bind(m.peer,id,e.channel);post({type:'channel',peer:m.peer,channel:id,label:e.channel.label,ordered:e.channel.ordered})}}
+else if(!p)throw Error('closed');
+else if(m.operation==='channelCreate'){bind(m.peer,m.payload.id,p.createDataChannel(m.payload.label,{ordered:m.payload.ordered}))}
+else if(m.operation==='send'){const c=channels.get(m.peer+':'+m.payload.channel);c.send(m.payload.binary?Uint8Array.from(atob(m.payload.data),x=>x.charCodeAt(0)).buffer:m.payload.data);v=c.bufferedAmount}
+else if(m.operation==='channelClose')channels.get(m.peer+':'+m.payload.channel)?.close();
+else if(m.operation==='createOffer')v=await p.createOffer();
+else if(m.operation==='createAnswer')v=await p.createAnswer();
+else if(m.operation==='setLocalDescription')await p.setLocalDescription(m.payload);
+else if(m.operation==='setRemoteDescription')await p.setRemoteDescription(m.payload);
+else if(m.operation==='addIceCandidate')await p.addIceCandidate(m.payload);
+else if(m.operation==='getStats')v=Array.from(await p.getStats());
+else if(m.operation==='close'){p.close();peers.delete(m.peer);for(const k of channels.keys())if(k.startsWith(m.peer+':'))channels.delete(k)}
+post({type:'reply',id:m.id,ok:true,value:v});}catch{post({type:'reply',id:m.id,ok:false})}};
+</script></body></html>

@@ -77,6 +77,7 @@ The DeepSeek Harness desktop edition is supported. Install the latest release:
 | DSH&nbsp;Desktop&nbsp;plugin | Remote sidebar | Supported | Install `ds-harness-remote@0.6.3`; this computer can also be the Host |
 | Web | Browser page | Supported | Open [https://dsh.r2049.cn](https://dsh.r2049.cn); reuses the native Harness interface |
 | Android | Native app | Supported | Download the APK from [Releases](https://github.com/liguobao/ds-harness-remote/releases/latest); see the [Android guide](apps/android/README.md) |
+| HarmonyOS NEXT | Native ArkUI preview | Experimental port | Based on Android v0.5.23; see the [HarmonyOS guide](apps/harmony/README.md) |
 | DSH Go | A standout app by ccch1mneyyy | Supported | See [ccch1mneyyy/dsh-go: an Android client for DeepSeek Harness. Run it directly on your phone or control DSH on your computer remotely.](https://github.com/ccch1mneyyy/dsh-go) |
 | iOS | TestFlight beta | Beta | Not publicly released; see [issue #20](https://github.com/liguobao/ds-harness-remote/issues/20) |
 | Browser&nbsp;extension | Chrome | Entry point only | Exchanges an already signed-in Web authorization for a separate device credential, lists online Hosts and opens the same-origin Remote Web; it does not host a conversation UI |

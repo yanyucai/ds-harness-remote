@@ -1,0 +1,56 @@
+{
+  "color": [
+    {
+      "name": "start_window_background",
+      "value": "#F5F5F7"
+    },
+    {
+      "name": "primary",
+      "value": "#1677FF"
+    },
+    {
+      "name": "primary_hover",
+      "value": "#4096FF"
+    },
+    {
+      "name": "background",
+      "value": "#F5F5F7"
+    },
+    {
+      "name": "card_background",
+      "value": "#FFFFFF"
+    },
+    {
+      "name": "text_primary",
+      "value": "#1D1D1F"
+    },
+    {
+      "name": "text_secondary",
+      "value": "#86868B"
+    },
+    {
+      "name": "border",
+      "value": "#E5E5EA"
+    },
+    {
+      "name": "success",
+      "value": "#34C759"
+    },
+    {
+      "name": "warning",
+      "value": "#FF9500"
+    },
+    {
+      "name": "danger",
+      "value": "#FF3B30"
+    },
+    {
+      "name": "thinking_bg",
+      "value": "#F2F4F7"
+    },
+    {
+      "name": "thinking_border",
+      "value": "#D0D5DD"
+    }
+  ]
+}

@@ -1,0 +1,32 @@
+{
+  "string": [
+    {
+      "name": "module_desc",
+      "value": "DSH Remote Entry Module"
+    },
+    {
+      "name": "EntryAbility_desc",
+      "value": "DeepSeek Harness Remote client for HarmonyOS"
+    },
+    {
+      "name": "EntryAbility_label",
+      "value": "DSH Remote 鸿蒙"
+    },
+    {
+      "name": "permission_internet_reason",
+      "value": "用于连接DeepSeek Harness远程服务及端到端加密通道"
+    },
+    {
+      "name": "permission_network_info_reason",
+      "value": "用于检测网络状态变化并优化P2P中继路由"
+    },
+    {
+      "name": "permission_read_media_reason",
+      "value": "用于选择图片附件并发送到远程工作区"
+    },
+    {
+      "name": "permission_write_media_reason",
+      "value": "用于保存工作区文件和预览图片"
+    }
+  ]
+}

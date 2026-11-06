@@ -1,0 +1,1112 @@
+<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'none'; img-src data:; base-uri 'none'; form-action 'none'"><script>window.ReactNativeWebView={postMessage:function(raw){if(window.top===window&&window.dshNative)window.dshNative.post(raw)}};for(const n of ['log','warn','error','info','debug'])console[n]=function(){};window.open=function(){return null}</script><style>body{margin:8px;font:15px/1.5 system-ui;color:#888;background:transparent}section{margin:8px 0}label,small{display:block}button,input{min-height:40px;margin:4px;max-width:95%}button{border:1px solid #8885;border-radius:8px;padding:6px 12px;color:inherit;background:#8881}input{color:inherit;background:#8881;border:1px solid #8885}table{border-collapse:collapse;display:block;overflow:auto}td,th{border:1px solid #8885;padding:6px}.row{display:flex;flex-wrap:wrap;gap:8px}a{color:#4b78e6}svg{width:100%}p{white-space:pre-wrap}#error{color:#c64b43}</style></head><body><main id="body"></main><script>"use strict";
+(() => {
+  // ../android/src/vendor/ds-bot/formula.js
+  var FUNCTIONS = {
+    min: { args: [1, Infinity], run: (...values) => Math.min(...values.map(num)) },
+    max: { args: [1, Infinity], run: (...values) => Math.max(...values.map(num)) },
+    abs: { args: [1, 1], run: (value) => Math.abs(num(value)) },
+    floor: { args: [1, 1], run: (value) => Math.floor(num(value)) },
+    ceil: { args: [1, 1], run: (value) => Math.ceil(num(value)) },
+    sqrt: { args: [1, 1], run: (value) => Math.sqrt(num(value)) },
+    pow: { args: [2, 2], run: (base, power) => num(base) ** num(power) },
+    round: { args: [1, 2], run: (value, digits = 0) => roundTo(num(value), digitsOf(digits)) },
+    clamp: { args: [3, 3], run: (value, low, high) => Math.min(Math.max(num(value), num(low)), num(high)) },
+    fixed: { args: [1, 2], run: (value, digits = 0) => roundTo(num(value), digitsOf(digits)).toFixed(digitsOf(digits)) },
+    format: { args: [1, 2], run: (value, digits = 0) => grouped(num(value), digitsOf(digits)) },
+    percent: { args: [1, 2], run: (value, digits = 0) => `${grouped(num(value) * 100, digitsOf(digits))}%` }
+  };
+  var FORMULA_FUNCTIONS = Object.keys(FUNCTIONS);
+  var CONSTANTS = /* @__PURE__ */ new Map([["true", true], ["false", false]]);
+  var MAX_NESTING = 64;
+  var FormulaError = class extends Error {
+  };
+  var fail = (message) => {
+    throw new FormulaError(message);
+  };
+  function num(value) {
+    if (typeof value === "number") return value;
+    if (typeof value === "boolean") return value ? 1 : 0;
+    const parsed = Number(value);
+    if (typeof value === "string" && value.trim() !== "" && !Number.isNaN(parsed)) return parsed;
+    return fail(`${JSON.stringify(value)} is not a number`);
+  }
+  var digitsOf = (digits) => {
+    const value = num(digits);
+    if (!Number.isInteger(value) || value < 0 || value > 10) fail("digits must be a whole number from 0 to 10");
+    return value;
+  };
+  var roundTo = (value, digits) => {
+    const scale = 10 ** digits;
+    return Math.round(value * scale) / scale;
+  };
+  function grouped(value, digits) {
+    if (!Number.isFinite(value)) return String(value);
+    const [whole, part] = Math.abs(roundTo(value, digits)).toFixed(digits).split(".");
+    const sign = value < 0 && Number(whole + (part ?? "")) !== 0 ? "-" : "";
+    return `${sign}${whole.replace(/\B(?=(\d{3})+(?!\d))/g, ",")}${part ? `.${part}` : ""}`;
+  }
+  var IDENT = /^[A-Za-z_][A-Za-z0-9_]*$/;
+  var isName = (value) => typeof value === "string" && IDENT.test(value);
+  var OPERATORS = ["==", "!=", "<=", ">=", "&&", "||", "+", "-", "*", "/", "%", "<", ">", "!", "?", ":", "(", ")", ","];
+  function tokenize(source) {
+    const tokens = [];
+    let at = 0;
+    while (at < source.length) {
+      const char = source[at];
+      if (/\s/.test(char)) {
+        at += 1;
+        continue;
+      }
+      const number = /^(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?/.exec(source.slice(at));
+      if (number) {
+        tokens.push({ kind: "number", value: Number(number[0]), at });
+        at += number[0].length;
+        continue;
+      }
+      const name = /^[A-Za-z_][A-Za-z0-9_]*/.exec(source.slice(at));
+      if (name) {
+        tokens.push({ kind: "name", value: name[0], at });
+        at += name[0].length;
+        continue;
+      }
+      if (char === '"' || char === "'") {
+        let end = at + 1;
+        let text = "";
+        while (end < source.length && source[end] !== char) {
+          if (source[end] === "\\" && end + 1 < source.length) {
+            text += source[end + 1];
+            end += 2;
+            continue;
+          }
+          text += source[end];
+          end += 1;
+        }
+        if (end >= source.length) fail(`unclosed string at ${at + 1}`);
+        tokens.push({ kind: "string", value: text, at });
+        at = end + 1;
+        continue;
+      }
+      const operator = OPERATORS.find((op) => source.startsWith(op, at));
+      if (operator === void 0) fail(`unexpected ${JSON.stringify(char)} at ${at + 1}`);
+      tokens.push({ kind: "op", value: operator, at });
+      at += operator.length;
+    }
+    return tokens;
+  }
+  var BINARY = [["||"], ["&&"], ["==", "!="], ["<", "<=", ">", ">="], ["+", "-"], ["*", "/", "%"]];
+  function parse(source) {
+    const tokens = tokenize(source);
+    let index = 0;
+    let depth = 0;
+    const peek = () => tokens[index];
+    const isOp = (value) => peek()?.kind === "op" && peek().value === value;
+    const expect = (value) => {
+      if (!isOp(value)) fail(peek() ? `expected "${value}" at ${peek().at + 1}` : `expected "${value}" at the end`);
+      index += 1;
+    };
+    const nest = (read) => {
+      depth += 1;
+      if (depth > MAX_NESTING) fail(`nested more than ${MAX_NESTING} levels`);
+      const node2 = read();
+      depth -= 1;
+      return node2;
+    };
+    const ternary = () => nest(() => {
+      const test = binary2(0);
+      if (!isOp("?")) return test;
+      index += 1;
+      const yes = ternary();
+      expect(":");
+      return { type: "if", test, yes, no: ternary() };
+    });
+    const binary2 = (level) => {
+      if (level === BINARY.length) return unary();
+      let left = binary2(level + 1);
+      while (peek()?.kind === "op" && BINARY[level].includes(peek().value)) {
+        const op = peek().value;
+        index += 1;
+        left = { type: "binary", op, left, right: binary2(level + 1) };
+      }
+      return left;
+    };
+    const unary = () => {
+      if (isOp("-") || isOp("!") || isOp("+")) {
+        const op = peek().value;
+        index += 1;
+        return nest(() => ({ type: "unary", op, value: unary() }));
+      }
+      return primary();
+    };
+    const primary = () => {
+      const token2 = peek();
+      if (token2 === void 0) fail("the formula ends too early");
+      index += 1;
+      if (token2.kind === "number" || token2.kind === "string") return { type: "value", value: token2.value };
+      if (token2.kind === "op" && token2.value === "(") {
+        const inner = ternary();
+        expect(")");
+        return inner;
+      }
+      if (token2.kind !== "name") fail(`unexpected "${token2.value}" at ${token2.at + 1}`);
+      if (!isOp("(")) return CONSTANTS.has(token2.value) ? { type: "value", value: CONSTANTS.get(token2.value) } : { type: "name", name: token2.value };
+      const fn = Object.hasOwn(FUNCTIONS, token2.value) ? FUNCTIONS[token2.value] : void 0;
+      if (fn === void 0) fail(`unknown function "${token2.value}"; allowed: ${FORMULA_FUNCTIONS.join(", ")}`);
+      index += 1;
+      const args = [];
+      if (!isOp(")")) {
+        args.push(ternary());
+        while (isOp(",")) {
+          index += 1;
+          args.push(ternary());
+        }
+      }
+      expect(")");
+      if (args.length < fn.args[0] || args.length > fn.args[1]) {
+        fail(`${token2.value}() takes ${fn.args[0] === fn.args[1] ? fn.args[0] : fn.args[1] === Infinity ? `at least ${fn.args[0]}` : `${fn.args[0]} or ${fn.args[1]}`} argument${fn.args[1] === 1 ? "" : "s"}; got ${args.length}`);
+      }
+      return { type: "call", name: token2.value, args };
+    };
+    if (tokens.length === 0) fail("the formula is empty");
+    const tree = ternary();
+    if (index < tokens.length) fail(`unexpected "${peek().value}" at ${peek().at + 1}`);
+    return tree;
+  }
+  function namesIn(node2, found = /* @__PURE__ */ new Set()) {
+    if (node2.type === "name") found.add(node2.name);
+    else if (node2.type === "unary") namesIn(node2.value, found);
+    else if (node2.type === "binary") {
+      namesIn(node2.left, found);
+      namesIn(node2.right, found);
+    } else if (node2.type === "if") {
+      namesIn(node2.test, found);
+      namesIn(node2.yes, found);
+      namesIn(node2.no, found);
+    } else if (node2.type === "call") for (const arg of node2.args) namesIn(arg, found);
+    return found;
+  }
+  function compileFormula(source) {
+    if (typeof source !== "string") return { error: "expected a formula string" };
+    try {
+      const tree = parse(source);
+      return { tree, names: [...namesIn(tree)] };
+    } catch (error) {
+      if (error instanceof FormulaError) return { error: error.message };
+      throw error;
+    }
+  }
+  function run(node2, lookup) {
+    switch (node2.type) {
+      case "value":
+        return node2.value;
+      case "name":
+        return lookup(node2.name);
+      case "unary": {
+        const value = run(node2.value, lookup);
+        if (node2.op === "!") return !truthy(value);
+        return node2.op === "-" ? -num(value) : num(value);
+      }
+      case "if":
+        return truthy(run(node2.test, lookup)) ? run(node2.yes, lookup) : run(node2.no, lookup);
+      case "call":
+        return FUNCTIONS[node2.name].run(...node2.args.map((arg) => run(arg, lookup)));
+      default:
+        return binary(node2, lookup);
+    }
+  }
+  var truthy = (value) => typeof value === "string" ? value !== "" : Boolean(value);
+  function binary(node2, lookup) {
+    if (node2.op === "&&") return truthy(run(node2.left, lookup)) ? run(node2.right, lookup) : false;
+    if (node2.op === "||") {
+      const left2 = run(node2.left, lookup);
+      return truthy(left2) ? left2 : run(node2.right, lookup);
+    }
+    const left = run(node2.left, lookup);
+    const right = run(node2.right, lookup);
+    switch (node2.op) {
+      case "+":
+        return typeof left === "string" || typeof right === "string" ? `${show(left)}${show(right)}` : num(left) + num(right);
+      case "-":
+        return num(left) - num(right);
+      case "*":
+        return num(left) * num(right);
+      case "/":
+        return num(left) / num(right);
+      case "%":
+        return num(left) % num(right);
+      case "==":
+        return left === right;
+      case "!=":
+        return left !== right;
+      case "<":
+        return num(left) < num(right);
+      case "<=":
+        return num(left) <= num(right);
+      case ">":
+        return num(left) > num(right);
+      default:
+        return num(left) >= num(right);
+    }
+  }
+  function show(value) {
+    if (typeof value === "number") return Number.isFinite(value) ? String(Number(value.toPrecision(12))) : String(value);
+    return String(value);
+  }
+  function createScope(inputs2, lets) {
+    const done = /* @__PURE__ */ new Map();
+    const busy = /* @__PURE__ */ new Set();
+    const lookup = (name) => {
+      if (inputs2.has(name)) return inputs2.get(name);
+      if (done.has(name)) return done.get(name);
+      const tree = lets.get(name);
+      if (tree === void 0) fail(`unknown name "${name}"`);
+      if (busy.has(name)) fail(`"${name}" refers to itself`);
+      busy.add(name);
+      try {
+        const value = run(tree, lookup);
+        done.set(name, value);
+        return value;
+      } finally {
+        busy.delete(name);
+      }
+    };
+    return lookup;
+  }
+  function evaluate(tree, lookup) {
+    try {
+      return { value: run(tree, lookup) };
+    } catch (error) {
+      if (error instanceof FormulaError) return { error: error.message };
+      if (error instanceof RangeError) return { error: "the formula is too deep to work out" };
+      throw error;
+    }
+  }
+
+  // ../android/src/vendor/ds-bot/views.js
+  var LAYOUT = ["stack", "row"];
+  var DISPLAY = ["text", "metric", "table", "chart", "progress", "callout", "sources", "html"];
+  var INPUT_TYPES = ["slider", "choice", "toggle", "number"];
+  var ANSWERS = ["options", "confirm", "form", "submit"];
+  var COMPONENTS = [...LAYOUT, ...DISPLAY, ...INPUT_TYPES, ...ANSWERS];
+  var TONES = ["good", "warn", "bad"];
+  var TEXT_TONES = ["muted"];
+  var CALLOUT_TONES = ["info", "good", "warn", "bad"];
+  var CHART_KINDS = ["bar", "hbar", "line", "area", "donut"];
+  var INTERACTIVE = new Set(ANSWERS);
+  var INPUTS = new Set(INPUT_TYPES);
+  var PROPS = {
+    stack: ["children", "let"],
+    row: ["children", "let"],
+    text: ["text", "tone"],
+    metric: ["label", "value", "tone", "caption"],
+    table: ["columns", "rows"],
+    chart: ["kind", "categories", "series", "unit", "caption"],
+    progress: ["label", "percent", "value", "max", "valueLabel", "tone"],
+    callout: ["text", "tone"],
+    sources: ["items"],
+    html: ["html", "summary", "height"],
+    slider: ["id", "label", "min", "max", "step", "value", "unit"],
+    choice: ["id", "label", "options", "value"],
+    toggle: ["id", "label", "value"],
+    number: ["id", "label", "min", "max", "step", "value", "unit"],
+    options: ["id", "options", "multi"],
+    confirm: ["id", "confirmLabel", "cancelLabel"],
+    form: ["id", "fields", "submitLabel"],
+    submit: ["id", "label"]
+  };
+  var MAX_DEPTH = 8;
+  var MAX_NODES = 64;
+  var MAX_CHILDREN = 16;
+  var MAX_TEXT = 2e3;
+  var MAX_CELL = 200;
+  var MAX_COLUMNS = 8;
+  var MAX_ROWS = 50;
+  var MAX_OPTIONS = 8;
+  var MAX_FIELDS = 6;
+  var RESERVED = /* @__PURE__ */ new Set(["true", "false"]);
+  var VIEW_BYTE_LIMIT = 8192;
+  var isRecord = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
+  var quoted = (value) => JSON.stringify(value);
+  var allowed = (list) => list.join(", ");
+  var isNumber = (value) => typeof value === "number" && Number.isFinite(value);
+  var isScalar = (value) => typeof value === "string" || typeof value === "boolean" || isNumber(value);
+  var isFormula = (value) => isRecord(value) && Object.keys(value).length === 1 && Object.hasOwn(value, "=");
+  function viewBytes(title, view2) {
+    return new TextEncoder().encode(`${JSON.stringify(view2) ?? ""}${title ?? ""}`).length;
+  }
+  var NUMERIC = ["value", "percent", "min", "max", "step", "height"];
+  var numeric = (value) => typeof value === "string" && value.trim() !== "" && !Number.isNaN(Number(value)) ? Number(value) : value;
+  function normalizeView(value) {
+    if (Array.isArray(value)) return value.map(normalizeView);
+    if (!isRecord(value)) return value;
+    const keys = Object.keys(value);
+    if (keys.length === 1 && keys[0] === "item") {
+      const inner = normalizeView(value.item);
+      if (Array.isArray(inner)) return inner;
+    }
+    const out = {};
+    for (const key of keys) Object.defineProperty(out, key, { value: normalizeView(value[key]), writable: true, enumerable: true, configurable: true });
+    for (const field of NUMERIC) if (Object.hasOwn(out, field)) out[field] = numeric(out[field]);
+    if (Array.isArray(out.values)) out.values = out.values.map(numeric);
+    return out;
+  }
+  function validateView(view2) {
+    const ctx = { ids: /* @__PURE__ */ new Set(), nodes: 0, interactive: false, inputs: /* @__PURE__ */ new Map(), lets: /* @__PURE__ */ new Map(), formulas: [] };
+    const error = checkNode(view2, "view", 1, ctx) ?? checkFormulas(ctx);
+    return error === void 0 ? { ok: true, interactive: ctx.interactive } : { ok: false, error };
+  }
+  function checkShownView(title, sent) {
+    let bytes;
+    try {
+      bytes = viewBytes(title, sent);
+    } catch {
+      return { error: "The view is not JSON data." };
+    }
+    if (bytes > VIEW_BYTE_LIMIT) return { error: `The view is ${bytes} bytes; the limit is ${VIEW_BYTE_LIMIT}.` };
+    if (title !== void 0 && title !== null && typeof title !== "string") return { error: "title: expected a string" };
+    const named = String(title ?? "").trim();
+    const view2 = normalizeView(sent);
+    const checked = validateView(view2);
+    if (!checked.ok) return { error: checked.error };
+    return { title: named, view: view2, interactive: checked.interactive };
+  }
+  function checkNode(node2, path, depth, ctx) {
+    if (!isRecord(node2)) return `${path}: expected a component object`;
+    if (depth > MAX_DEPTH) return `${path}: ${depth} levels exceeds the limit of ${MAX_DEPTH}`;
+    ctx.nodes += 1;
+    if (ctx.nodes > MAX_NODES) return `${path}: ${ctx.nodes} components exceeds the limit of ${MAX_NODES}`;
+    const type = node2.type;
+    if (!COMPONENTS.includes(type)) return `${path}.type: unknown component ${quoted(type)}; allowed: ${allowed(COMPONENTS)}`;
+    const props = PROPS[type];
+    for (const key of Object.keys(node2)) {
+      if (key === "type" || props.includes(key)) continue;
+      return `${path}.${key}: unknown property ${quoted(key)}; allowed: ${allowed(props)}`;
+    }
+    if (INTERACTIVE.has(type)) ctx.interactive = true;
+    switch (type) {
+      case "stack":
+      case "row":
+        return checkLayout(node2, path, depth, ctx);
+      case "text":
+        return checkText(node2, path, ctx);
+      case "metric":
+        return checkMetric(node2, path, ctx);
+      case "table":
+        return checkTable(node2, path, ctx);
+      case "chart":
+        return checkChart(node2, path, ctx);
+      case "progress":
+        return checkProgress(node2, path, ctx);
+      case "callout":
+        return checkCallout(node2, path, ctx);
+      case "sources":
+        return checkSources(node2, path);
+      case "html":
+        return checkHtml(node2, path);
+      case "slider":
+      case "number":
+        return checkNumberInput(node2, path, ctx);
+      case "choice":
+        return checkChoice(node2, path, ctx);
+      case "toggle":
+        return checkToggle(node2, path, ctx);
+      case "options":
+        return checkOptions(node2, path, ctx);
+      case "confirm":
+        return checkConfirm(node2, path, ctx);
+      case "form":
+        return checkForm(node2, path, ctx);
+      default:
+        return checkSubmit(node2, path, ctx);
+    }
+  }
+  function checkLayout(node2, path, depth, ctx) {
+    if (node2.let !== void 0) {
+      if (depth !== 1) return `${path}.let: only the outermost component can define names`;
+      if (!isRecord(node2.let)) return `${path}.let: expected an object of names to formulas`;
+      for (const [name, source] of Object.entries(node2.let)) {
+        if (!isName(name) || RESERVED.has(name)) return `${path}.let.${name}: a name is letters, digits and _, and starts with a letter or _`;
+        if (typeof source !== "string") return `${path}.let.${name}: expected a formula string`;
+        ctx.lets.set(name, { source, path: `${path}.let.${name}` });
+      }
+    }
+    if (!Array.isArray(node2.children)) return `${path}.children: expected an array of 1 to ${MAX_CHILDREN} components`;
+    if (node2.children.length < 1 || node2.children.length > MAX_CHILDREN) return `${path}.children: expected 1 to ${MAX_CHILDREN} children; got ${node2.children.length}`;
+    for (let index = 0; index < node2.children.length; index += 1) {
+      const error = checkNode(node2.children[index], `${path}.children[${index}]`, depth + 1, ctx);
+      if (error !== void 0) return error;
+    }
+    return void 0;
+  }
+  function checkValue(node2, key, path, ctx, kind, { required = false, max = MAX_TEXT } = {}) {
+    const value = node2[key];
+    const at = `${path}.${key}`;
+    if (value === void 0) return required ? `${at}: ${expected(kind)}` : void 0;
+    if (isFormula(value)) {
+      ctx.formulas.push({ source: value["="], path: at, kind });
+      return void 0;
+    }
+    if (kind === "number") return isNumber(value) ? void 0 : `${at}: ${expected(kind)}`;
+    if (Array.isArray(kind)) return kind.includes(value) ? void 0 : `${at}: unknown tone ${quoted(value)}; allowed: ${allowed(kind)}`;
+    if (kind === "string") {
+      if (typeof value !== "string") return `${at}: ${expected(kind)}`;
+      return value.length > max ? `${at}: ${value.length} characters exceeds the limit of ${max}` : void 0;
+    }
+    if (!isScalar(value)) return `${at}: ${expected(kind)}`;
+    return void 0;
+  }
+  var expected = (kind) => kind === "number" ? "expected a number" : kind === "string" ? "expected a string" : Array.isArray(kind) ? `expected one of ${allowed(kind)}` : "expected a string or a number";
+  function checkText(node2, path, ctx) {
+    return checkValue(node2, "text", path, ctx, "string", { required: true }) ?? checkValue(node2, "tone", path, ctx, TEXT_TONES);
+  }
+  function checkMetric(node2, path, ctx) {
+    if (typeof node2.label !== "string") return `${path}.label: expected a string`;
+    if (node2.value === void 0) return `${path}.value: expected a string or a number`;
+    if (typeof node2.value === "number" && !Number.isFinite(node2.value)) return `${path}.value: expected a finite number`;
+    return checkValue(node2, "value", path, ctx, "scalar") ?? checkValue(node2, "tone", path, ctx, TONES) ?? checkValue(node2, "caption", path, ctx, "string");
+  }
+  function checkTable(node2, path, ctx) {
+    if (!Array.isArray(node2.columns)) return `${path}.columns: expected an array of at most ${MAX_COLUMNS} columns`;
+    if (node2.columns.length > MAX_COLUMNS) return `${path}.columns: ${node2.columns.length} columns exceeds the limit of ${MAX_COLUMNS}`;
+    for (let index = 0; index < node2.columns.length; index += 1) {
+      const column = node2.columns[index];
+      const at = `${path}.columns[${index}]`;
+      if (!isRecord(column)) return `${at}: expected a column object`;
+      for (const key of Object.keys(column)) {
+        if (key !== "key" && key !== "label") return `${at}.${key}: unknown property ${quoted(key)}; allowed: key, label`;
+      }
+      if (typeof column.key !== "string" || column.key === "") return `${at}.key: expected a non-empty string`;
+      if (typeof column.label !== "string") return `${at}.label: expected a string`;
+    }
+    if (!Array.isArray(node2.rows)) return `${path}.rows: expected an array of at most ${MAX_ROWS} rows`;
+    if (node2.rows.length > MAX_ROWS) return `${path}.rows: ${node2.rows.length} rows exceeds the limit of ${MAX_ROWS}`;
+    for (let row = 0; row < node2.rows.length; row += 1) {
+      const cells = node2.rows[row];
+      if (!Array.isArray(cells)) return `${path}.rows[${row}]: expected an array of cells`;
+      for (let column = 0; column < cells.length; column += 1) {
+        const at = `${path}.rows[${row}][${column}]`;
+        if (isFormula(cells[column])) {
+          ctx.formulas.push({ source: cells[column]["="], path: at, kind: "scalar" });
+          continue;
+        }
+        const text = cellText(cells[column]);
+        if (text.length > MAX_CELL) return `${at}: ${text.length} characters exceeds the limit of ${MAX_CELL}`;
+      }
+    }
+    return void 0;
+  }
+  function checkChart(node2, path, ctx) {
+    if (node2.kind !== void 0 && !CHART_KINDS.includes(node2.kind)) return `${path}.kind: unknown chart ${quoted(node2.kind)}; allowed: ${allowed(CHART_KINDS)}`;
+    if (!Array.isArray(node2.categories) || node2.categories.length === 0) return `${path}.categories: expected a non-empty array of labels`;
+    for (let index = 0; index < node2.categories.length; index += 1) {
+      const label = node2.categories[index];
+      if (typeof label !== "string" && !isNumber(label)) return `${path}.categories[${index}]: expected a string`;
+    }
+    if (!Array.isArray(node2.series) || node2.series.length === 0) return `${path}.series: expected a non-empty array of { name?, values }`;
+    if (node2.kind === "donut" && node2.series.length > 1) return `${path}.series: a donut takes one series; got ${node2.series.length}`;
+    for (let index = 0; index < node2.series.length; index += 1) {
+      const series = node2.series[index];
+      const at = `${path}.series[${index}]`;
+      if (!isRecord(series)) return `${at}: expected a series object`;
+      for (const key of Object.keys(series)) {
+        if (key !== "name" && key !== "values") return `${at}.${key}: unknown property ${quoted(key)}; allowed: name, values`;
+      }
+      if (series.name !== void 0 && typeof series.name !== "string") return `${at}.name: expected a string`;
+      if (!Array.isArray(series.values)) return `${at}.values: expected an array of numbers`;
+      if (series.values.length !== node2.categories.length) return `${at}.values: ${series.values.length} values for ${node2.categories.length} categories`;
+      for (let item = 0; item < series.values.length; item += 1) {
+        const value = series.values[item];
+        if (isFormula(value)) ctx.formulas.push({ source: value["="], path: `${at}.values[${item}]`, kind: "number" });
+        else if (!isNumber(value)) return `${at}.values[${item}]: expected a number`;
+      }
+    }
+    if (node2.unit !== void 0 && typeof node2.unit !== "string") return `${path}.unit: expected a string`;
+    if (node2.caption !== void 0 && typeof node2.caption !== "string") return `${path}.caption: expected a string`;
+    return void 0;
+  }
+  function checkProgress(node2, path, ctx) {
+    if (node2.label !== void 0 && typeof node2.label !== "string") return `${path}.label: expected a string`;
+    if (node2.percent === void 0 === (node2.value === void 0)) return `${path}: give percent (0 to 100), or value with max`;
+    if (node2.percent !== void 0 && !isFormula(node2.percent)) {
+      if (typeof node2.percent !== "number" || !Number.isFinite(node2.percent) || node2.percent < 0 || node2.percent > 100) return `${path}.percent: expected a number from 0 to 100`;
+    }
+    if (node2.value !== void 0 && node2.max === void 0) return `${path}.max: expected a number with value`;
+    if (node2.value === void 0 && node2.max !== void 0) return `${path}.value: expected a number with max`;
+    return checkValue(node2, "percent", path, ctx, "number") ?? checkValue(node2, "value", path, ctx, "number") ?? checkValue(node2, "max", path, ctx, "number") ?? checkValue(node2, "valueLabel", path, ctx, "scalar") ?? checkValue(node2, "tone", path, ctx, TONES);
+  }
+  function checkCallout(node2, path, ctx) {
+    return checkValue(node2, "text", path, ctx, "string", { required: true }) ?? checkValue(node2, "tone", path, ctx, CALLOUT_TONES);
+  }
+  function checkSources(node2, path) {
+    if (!Array.isArray(node2.items) || node2.items.length === 0) return `${path}.items: expected a non-empty array of { label, url }`;
+    for (let index = 0; index < node2.items.length; index += 1) {
+      const item = node2.items[index];
+      const at = `${path}.items[${index}]`;
+      if (!isRecord(item)) return `${at}: expected a { label, url } object`;
+      for (const key of Object.keys(item)) {
+        if (key !== "label" && key !== "url") return `${at}.${key}: unknown property ${quoted(key)}; allowed: label, url`;
+      }
+      if (typeof item.label !== "string" || item.label.trim() === "") return `${at}.label: expected a non-empty string`;
+      if (typeof item.url !== "string" || !/^https?:\/\/[^\s]+$/i.test(item.url)) return `${at}.url: expected an http(s) address`;
+    }
+    return void 0;
+  }
+  function checkHtml(node2, path) {
+    if (typeof node2.html !== "string" || node2.html.trim() === "") return `${path}.html: expected a non-empty string`;
+    if (typeof node2.summary !== "string" || node2.summary.trim() === "") return `${path}.summary: expected one line that says what the view shows`;
+    if (node2.height !== void 0 && (!isNumber(node2.height) || node2.height <= 0)) return `${path}.height: expected a positive number of pixels`;
+    return void 0;
+  }
+  function checkInputId(node2, path, ctx) {
+    if (!isName(node2.id) || RESERVED.has(node2.id)) return `${path}.id: an input id is letters, digits and _, and starts with a letter or _, so formulas can use it`;
+    if (ctx.ids.has(node2.id)) return `${path}.id: duplicate id ${quoted(node2.id)}`;
+    ctx.ids.add(node2.id);
+    if (typeof node2.label !== "string") return `${path}.label: expected a string`;
+    return void 0;
+  }
+  function checkNumberInput(node2, path, ctx) {
+    const idError = checkInputId(node2, path, ctx);
+    if (idError !== void 0) return idError;
+    for (const key of ["min", "max", "step"]) {
+      if (node2[key] !== void 0 && !isNumber(node2[key])) return `${path}.${key}: expected a number`;
+    }
+    if (node2.type === "slider" && (node2.min === void 0 || node2.max === void 0)) return `${path}: a slider needs min and max`;
+    if (node2.min !== void 0 && node2.max !== void 0 && node2.max <= node2.min) return `${path}.max: expected more than min (${node2.min})`;
+    if (node2.step !== void 0 && node2.step <= 0) return `${path}.step: expected more than 0`;
+    if (!isNumber(node2.value)) return `${path}.value: expected a number`;
+    if (node2.min !== void 0 && node2.value < node2.min || node2.max !== void 0 && node2.value > node2.max) return `${path}.value: expected a number from ${node2.min ?? "-\u221E"} to ${node2.max ?? "\u221E"}`;
+    if (node2.unit !== void 0 && typeof node2.unit !== "string") return `${path}.unit: expected a string`;
+    ctx.inputs.set(node2.id, node2.value);
+    return void 0;
+  }
+  function checkChoice(node2, path, ctx) {
+    const idError = checkInputId(node2, path, ctx);
+    if (idError !== void 0) return idError;
+    if (!Array.isArray(node2.options) || node2.options.length === 0) return `${path}.options: expected a non-empty array of { label, value }`;
+    const labels = /* @__PURE__ */ new Set();
+    const values = /* @__PURE__ */ new Set();
+    for (let index = 0; index < node2.options.length; index += 1) {
+      const option = node2.options[index];
+      const at = `${path}.options[${index}]`;
+      if (!isRecord(option)) return `${at}: expected a { label, value } object`;
+      for (const key of Object.keys(option)) {
+        if (key !== "label" && key !== "value") return `${at}.${key}: unknown property ${quoted(key)}; allowed: label, value`;
+      }
+      if (typeof option.label !== "string" || option.label.trim() === "") return `${at}.label: expected a non-empty string`;
+      if (labels.has(option.label)) return `${at}.label: duplicate label ${quoted(option.label)}`;
+      labels.add(option.label);
+      const value = option.value ?? option.label;
+      if (!isScalar(value)) return `${at}.value: expected a string, a number or true/false`;
+      if (values.has(value)) return `${at}.value: duplicate value ${quoted(value)}`;
+      values.add(value);
+    }
+    const chosen = node2.value ?? choiceValue(node2.options[0]);
+    if (!values.has(chosen)) return `${path}.value: expected one of the options' values`;
+    ctx.inputs.set(node2.id, chosen);
+    return void 0;
+  }
+  function checkToggle(node2, path, ctx) {
+    const idError = checkInputId(node2, path, ctx);
+    if (idError !== void 0) return idError;
+    if (node2.value !== void 0 && typeof node2.value !== "boolean") return `${path}.value: expected true or false`;
+    ctx.inputs.set(node2.id, node2.value === true);
+    return void 0;
+  }
+  function checkOptions(node2, path, ctx) {
+    const idError = checkId(node2, path, ctx);
+    if (idError !== void 0) return idError;
+    if (node2.multi !== void 0 && typeof node2.multi !== "boolean") return `${path}.multi: expected a boolean`;
+    if (!Array.isArray(node2.options)) return `${path}.options: expected an array of 1 to ${MAX_OPTIONS} options`;
+    if (node2.options.length < 1 || node2.options.length > MAX_OPTIONS) return `${path}.options: expected 1 to ${MAX_OPTIONS} options; got ${node2.options.length}`;
+    const labels = /* @__PURE__ */ new Set();
+    for (let index = 0; index < node2.options.length; index += 1) {
+      const option = node2.options[index];
+      const at = `${path}.options[${index}]`;
+      if (!isRecord(option)) return `${at}: expected an option object`;
+      for (const key of Object.keys(option)) {
+        if (key !== "label" && key !== "description") return `${at}.${key}: unknown property ${quoted(key)}; allowed: label, description`;
+      }
+      if (typeof option.label !== "string" || option.label.trim() === "") return `${at}.label: expected a non-empty string`;
+      if (labels.has(option.label)) return `${at}.label: duplicate label ${quoted(option.label)}`;
+      labels.add(option.label);
+      if (option.description !== void 0 && typeof option.description !== "string") return `${at}.description: expected a string`;
+    }
+    return void 0;
+  }
+  function checkConfirm(node2, path, ctx) {
+    const idError = checkId(node2, path, ctx);
+    if (idError !== void 0) return idError;
+    if (node2.confirmLabel !== void 0 && typeof node2.confirmLabel !== "string") return `${path}.confirmLabel: expected a string`;
+    if (node2.cancelLabel !== void 0 && typeof node2.cancelLabel !== "string") return `${path}.cancelLabel: expected a string`;
+    return void 0;
+  }
+  function checkForm(node2, path, ctx) {
+    const idError = checkId(node2, path, ctx);
+    if (idError !== void 0) return idError;
+    if (node2.submitLabel !== void 0 && typeof node2.submitLabel !== "string") return `${path}.submitLabel: expected a string`;
+    if (!Array.isArray(node2.fields)) return `${path}.fields: expected an array of at most ${MAX_FIELDS} fields`;
+    if (node2.fields.length > MAX_FIELDS) return `${path}.fields: ${node2.fields.length} fields exceeds the limit of ${MAX_FIELDS}`;
+    const seen = /* @__PURE__ */ new Set();
+    for (let index = 0; index < node2.fields.length; index += 1) {
+      const field = node2.fields[index];
+      const at = `${path}.fields[${index}]`;
+      if (!isRecord(field)) return `${at}: expected a field object`;
+      for (const key of Object.keys(field)) {
+        if (key !== "id" && key !== "label" && key !== "placeholder") return `${at}.${key}: unknown property ${quoted(key)}; allowed: id, label, placeholder`;
+      }
+      if (typeof field.id !== "string" || field.id === "") return `${at}.id: expected a non-empty string`;
+      if (field.id === "__proto__") return `${at}.id: "__proto__" cannot be an id`;
+      if (seen.has(field.id)) return `${at}.id: duplicate field id ${quoted(field.id)}`;
+      seen.add(field.id);
+      if (typeof field.label !== "string") return `${at}.label: expected a string`;
+      if (field.placeholder !== void 0 && typeof field.placeholder !== "string") return `${at}.placeholder: expected a string`;
+    }
+    return void 0;
+  }
+  function checkSubmit(node2, path, ctx) {
+    const idError = checkId(node2, path, ctx);
+    if (idError !== void 0) return idError;
+    if (node2.label !== void 0 && typeof node2.label !== "string") return `${path}.label: expected a string`;
+    return void 0;
+  }
+  function checkId(node2, path, ctx) {
+    if (typeof node2.id !== "string" || node2.id === "") return `${path}.id: expected a non-empty string`;
+    if (node2.id === "__proto__") return `${path}.id: "__proto__" cannot be an id`;
+    if (ctx.ids.has(node2.id)) return `${path}.id: duplicate id ${quoted(node2.id)}`;
+    ctx.ids.add(node2.id);
+    return void 0;
+  }
+  function checkFormulas(ctx) {
+    const known = /* @__PURE__ */ new Set([...ctx.inputs.keys(), ...ctx.lets.keys()]);
+    const lets = /* @__PURE__ */ new Map();
+    for (const [name, entry] of ctx.lets) {
+      if (ctx.inputs.has(name)) return `${entry.path}: ${quoted(name)} is already an input id`;
+      const compiled2 = compileFormula(entry.source);
+      if (compiled2.error !== void 0) return `${entry.path}: ${compiled2.error}`;
+      const unknown = compiled2.names.find((item) => !known.has(item));
+      if (unknown !== void 0) return `${entry.path}: unknown name ${quoted(unknown)}; known: ${allowed([...known]) || "(none)"}`;
+      lets.set(name, compiled2.tree);
+    }
+    const lookup = createScope(ctx.inputs, lets);
+    for (const [name, entry] of ctx.lets) {
+      const result = evaluate(lets.get(name), lookup);
+      if (result.error !== void 0) return `${entry.path}: ${result.error}`;
+    }
+    for (const formula of ctx.formulas) {
+      const compiled2 = compileFormula(formula.source);
+      if (compiled2.error !== void 0) return `${formula.path}: ${compiled2.error}`;
+      const unknown = compiled2.names.find((item) => !known.has(item));
+      if (unknown !== void 0) return `${formula.path}: unknown name ${quoted(unknown)}; known: ${allowed([...known]) || "(none)"}`;
+      const result = evaluate(compiled2.tree, lookup);
+      if (result.error !== void 0) return `${formula.path}: ${result.error}`;
+      const problem = kindProblem(result.value, formula.kind);
+      if (problem !== void 0) return `${formula.path}: the formula gives ${quoted(result.value)}; ${problem}`;
+    }
+    return void 0;
+  }
+  function kindProblem(value, kind) {
+    if (kind === "number") return isNumber(value) ? void 0 : "expected a number";
+    if (Array.isArray(kind)) return kind.includes(value) ? void 0 : `expected one of ${allowed(kind)}`;
+    if (kind === "string") return isScalar(value) ? void 0 : "expected text";
+    return isScalar(value) ? void 0 : "expected a string or a number";
+  }
+  function cellText(value) {
+    if (typeof value === "string") return value;
+    const text = JSON.stringify(value);
+    return typeof text === "string" ? text : "";
+  }
+  var compiled = /* @__PURE__ */ new WeakMap();
+  var treeOf = (formula) => {
+    let entry = compiled.get(formula);
+    if (entry === void 0) {
+      entry = compileFormula(formula["="]);
+      compiled.set(formula, entry);
+    }
+    return entry;
+  };
+  var choiceValue = (option) => option?.value ?? option?.label;
+  function walk(node2, visit) {
+    if (!isRecord(node2)) return;
+    visit(node2);
+    if (LAYOUT.includes(node2.type) && Array.isArray(node2.children)) for (const child of node2.children) walk(child, visit);
+  }
+  function viewInputs(view2) {
+    const found = [];
+    walk(view2, (node2) => {
+      if (INPUTS.has(node2.type)) found.push(node2);
+    });
+    return found;
+  }
+  function inputDefault(node2) {
+    if (node2.type === "toggle") return node2.value === true;
+    if (node2.type === "choice") return node2.value ?? choiceValue(Array.isArray(node2.options) ? node2.options[0] : void 0);
+    return node2.value;
+  }
+  function viewScope(view2, values = {}) {
+    const inputs2 = /* @__PURE__ */ new Map();
+    for (const node2 of viewInputs(view2)) inputs2.set(node2.id, Object.hasOwn(values, node2.id) ? values[node2.id] : inputDefault(node2));
+    const lets = /* @__PURE__ */ new Map();
+    for (const [name, source] of Object.entries(isRecord(view2?.let) ? view2.let : {})) {
+      const entry = compileFormula(source);
+      if (entry.tree !== void 0) lets.set(name, entry.tree);
+    }
+    return createScope(inputs2, lets);
+  }
+  function resolve(value, lookup, fallback = void 0) {
+    if (!isFormula(value)) return value;
+    const entry = treeOf(value);
+    if (entry.tree === void 0) return fallback;
+    const result = evaluate(entry.tree, lookup);
+    return result.error === void 0 ? result.value : fallback;
+  }
+  var asText = (value) => value === void 0 || value === null ? "" : show(value);
+  function interactiveNodes(node2, found = []) {
+    walk(node2, (item) => {
+      if (INTERACTIVE.has(item.type)) found.push(item);
+    });
+    return found;
+  }
+  function validateViewAnswer(view2, action, values) {
+    const nodes = interactiveNodes(view2);
+    if (typeof action !== "string" || action === "") return { error: `action: expected an interactive component id; allowed: ${allowed(nodes.map((node3) => node3.id))}` };
+    const node2 = nodes.find((item) => item.id === action);
+    if (node2 === void 0) return { error: `action: no interactive component with id ${quoted(action)}; allowed: ${allowed(nodes.map((item) => item.id))}` };
+    if (!isRecord(values)) return { error: "values: expected an object" };
+    const inputs2 = validateInputs(view2, values.inputs);
+    if (inputs2.error !== void 0) return inputs2;
+    const extra = inputs2.inputs === void 0 ? {} : { inputs: inputs2.inputs };
+    if (node2.type === "submit") return { ...extra };
+    const own = node2.type === "options" ? validateOptions(node2, values) : node2.type === "confirm" ? validateConfirm(values) : validateForm(node2, values);
+    return own.error === void 0 ? { ...own, ...extra } : own;
+  }
+  function validateInputs(view2, sent) {
+    const nodes = viewInputs(view2);
+    if (nodes.length === 0) return sent === void 0 ? {} : { error: "values.inputs: this view has no inputs" };
+    if (sent !== void 0 && !isRecord(sent)) return { error: "values.inputs: expected an object of input ids to values" };
+    const given = sent ?? {};
+    const ids = nodes.map((node2) => node2.id);
+    const unknown = Object.keys(given).find((key) => !ids.includes(key));
+    if (unknown !== void 0) return { error: `values.inputs.${unknown}: unknown input; allowed: ${allowed(ids)}` };
+    const inputs2 = {};
+    for (const node2 of nodes) {
+      const value = Object.hasOwn(given, node2.id) ? given[node2.id] : inputDefault(node2);
+      const at = `values.inputs.${node2.id}`;
+      if (node2.type === "toggle" && typeof value !== "boolean") return { error: `${at}: expected true or false` };
+      if (node2.type === "choice" && !(Array.isArray(node2.options) ? node2.options : []).some((option) => choiceValue(option) === value)) return { error: `${at}: expected one of the options' values` };
+      if (node2.type === "slider" || node2.type === "number") {
+        if (!isNumber(value)) return { error: `${at}: expected a number` };
+        if (node2.min !== void 0 && value < node2.min || node2.max !== void 0 && value > node2.max) return { error: `${at}: expected a number from ${node2.min ?? "-\u221E"} to ${node2.max ?? "\u221E"}` };
+      }
+      inputs2[node2.id] = value;
+    }
+    return { inputs: inputs2 };
+  }
+  function validateOptions(node2, values) {
+    if (!Array.isArray(values.selected)) return { error: "values.selected: expected an array of option labels" };
+    const labels = new Set((node2.options ?? []).map((option) => option?.label));
+    const picked = values.selected.filter((label) => typeof label === "string" && labels.has(label));
+    const selected = node2.multi === true ? [...new Set(picked)] : picked.slice(0, 1);
+    if (selected.length === 0) return { error: "values.selected: select at least one option" };
+    return { selected };
+  }
+  function validateConfirm(values) {
+    if (typeof values.confirmed !== "boolean") return { error: "values.confirmed: expected a boolean" };
+    return { confirmed: values.confirmed };
+  }
+  function validateForm(node2, values) {
+    if (!isRecord(values.fields)) return { error: "values.fields: expected an object of field ids to strings" };
+    const declared = (node2.fields ?? []).map((field) => field?.id).filter((id) => typeof id === "string");
+    const allowedIds = new Set(declared);
+    const fields = {};
+    for (const [key, value] of Object.entries(values.fields)) {
+      if (!allowedIds.has(key)) return { error: `values.fields.${key}: unknown field; allowed: ${allowed(declared)}` };
+      if (typeof value !== "string") return { error: `values.fields.${key}: expected a string` };
+      if (value.length > MAX_TEXT) return { error: `values.fields.${key}: ${value.length} characters exceeds the limit of ${MAX_TEXT}` };
+      fields[key] = value;
+    }
+    return { fields };
+  }
+
+  // ../android/src/services/bot-view.ts
+  function checkedBotView(pending2) {
+    const stack = [{ value: pending2.view, depth: 0 }];
+    let count = 0;
+    while (stack.length) {
+      const { value, depth } = stack.pop();
+      if (++count > 4096 || depth > 32) return void 0;
+      if (value && typeof value === "object") {
+        const children = Object.values(value);
+        if (children.length + count + stack.length > 4096) return void 0;
+        for (const child of children) stack.push({ value: child, depth: depth + 1 });
+      }
+    }
+    try {
+      const checked = checkShownView(pending2.title, pending2.view);
+      return checked.error === void 0 ? checked.view : void 0;
+    } catch {
+      return void 0;
+    }
+  }
+
+  // surfaces/bot-view.js
+  var dictionary = () => /* @__PURE__ */ Object.create(null);
+  var pending = {};
+  var view;
+  var inputs = dictionary();
+  var forms = dictionary();
+  var selections = dictionary();
+  var revision = "";
+  var token = "";
+  var sending = false;
+  var submitted = false;
+  var errorText = "";
+  var replySequence = 0;
+  var pendingReply = 0;
+  var disabled = () => pending.disabled === true || sending || submitted;
+  var tr = (key, fallback) => pending.labels?.[key] || fallback;
+  var host = document.getElementById("body");
+  var send = (value) => window.ReactNativeWebView.postMessage(JSON.stringify(value));
+  var node = (tag, text) => {
+    const element = document.createElement(tag);
+    if (text !== void 0) element.textContent = String(text);
+    return element;
+  };
+  window.__setBotToken = (value) => {
+    token = value;
+  };
+  function button(label, callback) {
+    const value = node("button", label);
+    value.disabled = disabled();
+    value.onclick = callback;
+    return value;
+  }
+  function reply(action, own) {
+    if (disabled()) return;
+    const values = viewInputs(view).length ? { ...own, inputs } : own;
+    if (validateViewAnswer(view, action, values).error) {
+      document.getElementById("error").textContent = tr("invalid", "Please check your answers");
+      return;
+    }
+    sending = true;
+    pendingReply = ++replySequence;
+    errorText = "";
+    draw();
+    send({ type: "botReply", token, viewId: pending.id, replyId: pendingReply, action, values });
+  }
+  function chart(value, scope) {
+    const holder = node("div"), svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    svg.setAttribute("viewBox", "0 0 360 200");
+    svg.setAttribute("role", "img");
+    svg.setAttribute("aria-label", value.caption || "Chart");
+    const categories = value.categories ?? [], series = value.series ?? [], palette = ["#4b78e6", "#e69b42", "#38a374", "#bc729f"];
+    const values = series.flatMap((row) => row.values.map((v) => Number(resolve(v, scope, NaN))));
+    if (!values.every(Number.isFinite)) return node("p", "Invalid chart data");
+    const magnitude = Math.max(1, ...values.map(Math.abs)), low = Math.min(0, ...values.map((n) => n / magnitude)), high = Math.max(0, ...values.map((n) => n / magnitude)), span = high - low || 1;
+    const x = (i) => 48 + (i + 0.5) * 284 / categories.length, y = (v) => 164 - (v / magnitude - low) / span * 140, base = y(0);
+    function shape(tag, attrs) {
+      const e = document.createElementNS(svg.namespaceURI, tag);
+      for (const [key, v] of Object.entries(attrs)) e.setAttribute(key, String(v));
+      svg.append(e);
+      return e;
+    }
+    if (value.kind === "donut") {
+      const list = series[0]?.values.map((v) => Number(resolve(v, scope, 0))) ?? [], total = list.reduce((a, b) => a + Math.max(0, b / magnitude), 0);
+      let offset = 0;
+      list.forEach((v, i) => {
+        const length = total ? Math.max(0, v / magnitude) / total * 408.4 : 0;
+        shape("circle", { cx: 180, cy: 95, r: 65, fill: "none", stroke: palette[i % 4], "stroke-width": 26, "stroke-dasharray": `${length} ${408.4 - length}`, "stroke-dashoffset": -offset, transform: "rotate(-90 180 95)" });
+        offset += length;
+      });
+    } else series.forEach((row, g) => {
+      const list = row.values.map((v) => Number(resolve(v, scope, 0))), color = palette[g % 4];
+      if (value.kind === "line" || value.kind === "area") shape("path", { d: "M " + list.map((v, i) => `${x(i)},${y(v)}`).join(" L ") + (value.kind === "area" ? ` L ${x(list.length - 1)},${base} L ${x(0)},${base} Z` : ""), stroke: color, "stroke-width": 2, fill: value.kind === "area" ? color : "none", "fill-opacity": 0.15 });
+      else list.forEach((v, i) => {
+        if (value.kind === "hbar") {
+          const zero = 48 + (0 - low) / span * 284, end = 48 + (v / magnitude - low) / span * 284;
+          shape("rect", { x: Math.min(zero, end), y: 24 + i * 140 / categories.length + g * 112 / categories.length / series.length, width: Math.abs(end - zero), height: Math.max(0.5, 100 / categories.length / series.length), fill: color });
+        } else shape("rect", { x: 48 + i * 284 / categories.length + g * 228 / categories.length / series.length, y: Math.min(y(v), base), width: Math.max(0.5, 210 / categories.length / series.length), height: Math.abs(y(v) - base), fill: color });
+      });
+    });
+    holder.append(svg);
+    const table = node("table");
+    const header = node("tr");
+    header.append(node("th", value.caption || ""));
+    for (const row of series) header.append(node("th", row.name));
+    table.append(header);
+    categories.forEach((label, i) => {
+      const tr2 = node("tr");
+      tr2.append(node("td", asText(label)));
+      for (const row of series) tr2.append(node("td", Number(resolve(row.values[i], scope, NaN))));
+      table.append(tr2);
+    });
+    holder.append(table);
+    return holder;
+  }
+  function render(value, depth = 0) {
+    if (depth > 32) return node("span");
+    const scope = viewScope(view, inputs), display = (v) => asText(resolve(v, scope, "\u2014")), id = value.id ?? "", box = node("section");
+    if (value.label) box.append(node("label", value.label));
+    switch (value.type) {
+      case "row":
+        box.className = "row";
+      case "stack":
+        for (const child of value.children ?? []) box.append(render(child, depth + 1));
+        break;
+      case "text":
+      case "callout":
+        box.append(node("p", display(value.text)));
+        break;
+      case "metric":
+        box.append(node("strong", display(value.value)), node("small", display(value.caption)));
+        break;
+      case "progress": {
+        const progress = node("progress"), max = Number(resolve(value.max, scope, 0));
+        const percent = value.percent !== void 0 ? Number(resolve(value.percent, scope, 0)) : max > 0 ? Number(resolve(value.value, scope, 0)) / max * 100 : 0;
+        progress.max = 100;
+        progress.value = Number.isFinite(percent) ? Math.max(0, Math.min(100, percent)) : 0;
+        box.append(progress);
+        break;
+      }
+      case "chart":
+        box.append(chart(value, scope));
+        break;
+      case "table": {
+        const table = node("table"), head = node("tr");
+        for (const col of value.columns ?? []) head.append(node("th", col.label || col.key));
+        table.append(head);
+        for (const row of value.rows ?? []) {
+          const tr2 = node("tr");
+          for (const cell of row) tr2.append(node("td", display(cell)));
+          table.append(tr2);
+        }
+        box.append(table);
+        break;
+      }
+      case "sources":
+        for (const source of value.items ?? []) {
+          const a = node("a", source.label || source.url);
+          a.href = "#";
+          a.onclick = (e) => {
+            e.preventDefault();
+            send({ type: "link", url: source.url });
+          };
+          box.append(a);
+        }
+        break;
+      case "html":
+        box.append(node("p", value.summary || ""), node("small", tr("html", "HTML preview is unavailable")));
+        break;
+      case "slider":
+      case "number":
+      case "toggle":
+      case "choice": {
+        if (value.type === "choice") {
+          for (const option of value.options ?? []) box.append(button(option.label, () => {
+            inputs[id] = choiceValue(option);
+            draw();
+          }));
+          break;
+        }
+        const input = node("input");
+        input.disabled = disabled();
+        input.type = value.type === "toggle" ? "checkbox" : value.type === "slider" ? "range" : "number";
+        input.setAttribute("aria-label", value.label || id);
+        const current = Object.hasOwn(inputs, id) ? inputs[id] : inputDefault(value);
+        input.checked = current === true;
+        input.value = String(current ?? "");
+        for (const key of ["min", "max", "step"]) if (value[key] !== void 0) input[key] = value[key];
+        input.onchange = () => {
+          inputs[id] = value.type === "toggle" ? input.checked : Number(input.value);
+          draw();
+        };
+        box.append(input);
+        break;
+      }
+      case "options": {
+        const selected = new Set(selections[id] || []);
+        for (const option of value.options ?? []) {
+          const label = node("label"), input = node("input");
+          input.type = value.multi ? "checkbox" : "radio";
+          input.name = id;
+          input.disabled = disabled();
+          input.checked = selected.has(option.label);
+          label.append(input, node("span", option.label), node("small", option.description || ""));
+          input.onchange = () => {
+            if (!value.multi) selected.clear();
+            if (input.checked) selected.add(option.label);
+            else selected.delete(option.label);
+            selections[id] = [...selected];
+          };
+          box.append(label);
+        }
+        box.append(button(tr("submit", "Submit"), () => reply(id, { selected: [...selected] })));
+        break;
+      }
+      case "confirm":
+        box.append(button(value.cancelLabel || tr("reject", "Cancel"), () => reply(id, { confirmed: false })), button(value.confirmLabel || tr("confirm", "Confirm"), () => reply(id, { confirmed: true })));
+        break;
+      case "form": {
+        const fields = forms[id] || (forms[id] = dictionary());
+        for (const field of value.fields ?? []) {
+          const label = node("label", field.label), input = node("input");
+          input.placeholder = field.placeholder || "";
+          input.maxLength = 2e3;
+          input.disabled = disabled();
+          input.value = fields[field.id] || "";
+          input.oninput = () => {
+            fields[field.id] = input.value;
+          };
+          label.append(input);
+          box.append(label);
+        }
+        box.append(button(value.submitLabel || tr("submit", "Submit"), () => reply(id, { fields })));
+        break;
+      }
+      case "submit":
+        box.append(button(value.label || tr("submit", "Submit"), () => reply(id, {})));
+        break;
+      default:
+        box.append(node("small", tr("unknown", "Unsupported card")));
+    }
+    return box;
+  }
+  function draw() {
+    host.replaceChildren();
+    if (!view) {
+      host.append(node("p", tr("unknown", "Invalid card")));
+      return;
+    }
+    host.append(node("h3", pending.title || ""), render(view));
+    const error = node("p");
+    error.id = "error";
+    error.textContent = errorText;
+    error.setAttribute("role", "status");
+    host.append(error);
+    if (sending || submitted) host.append(node("p", tr(sending ? "sending" : "sent", sending ? "Sending\u2026" : "Submitted")));
+  }
+  window.receive = (value) => {
+    const blueprint = checkedBotView(value), next = JSON.stringify([value.id, blueprint]);
+    if (next !== revision) {
+      revision = next;
+      inputs = dictionary();
+      forms = dictionary();
+      selections = dictionary();
+      sending = false;
+      submitted = false;
+      pendingReply = 0;
+      errorText = "";
+    }
+    pending = value;
+    view = blueprint;
+    draw();
+  };
+  window.__botReplyResult = (id, ok, replyId) => {
+    if (id !== pending.id || replyId !== pendingReply || !sending) return;
+    sending = false;
+    submitted = ok === true;
+    errorText = ok ? "" : tr("failed", "Delivery not confirmed; please try again");
+    draw();
+  };
+  new ResizeObserver(() => send({ type: "height", height: document.body.scrollHeight })).observe(document.body);
+  send({ type: "ready" });
+})();
+</script></body></html>

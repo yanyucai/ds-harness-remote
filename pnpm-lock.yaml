@@ -265,6 +265,34 @@ importers:
         specifier: ^2.1.8
         version: 2.1.9(@types/node@24.19.2)(lightningcss@1.33.0)(terser@5.50.0)
 
+  apps/harmony:
+    dependencies:
+      '@dsh-remote/client-core':
+        specifier: workspace:*
+        version: link:../../packages/client-core
+      '@dsh-remote/crypto':
+        specifier: workspace:*
+        version: link:../../packages/crypto
+      '@dsh-remote/protocol':
+        specifier: workspace:*
+        version: link:../../packages/protocol
+      '@dsh-remote/webrtc':
+        specifier: workspace:*
+        version: link:../../packages/webrtc
+      '@noble/hashes':
+        specifier: ^1.6.1
+        version: 1.8.0
+    devDependencies:
+      esbuild:
+        specifier: ^0.25.0
+        version: 0.25.12
+      typescript:
+        specifier: ^5.7.3
+        version: 5.9.3
+      vitest:
+        specifier: ^2.1.8
+        version: 2.1.9(@types/node@22.20.1)(lightningcss@1.33.0)(terser@5.50.0)
+
   apps/server:
     dependencies:
       '@dsh-remote/protocol':

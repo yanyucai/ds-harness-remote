@@ -1,0 +1,20 @@
+{
+  "string": [
+    {
+      "name": "app_name",
+      "value": "DSH Remote Harmony"
+    },
+    {
+      "name": "module_desc",
+      "value": "DSH Remote Entry Module"
+    },
+    {
+      "name": "EntryAbility_label",
+      "value": "DSH Remote Harmony"
+    },
+    {
+      "name": "EntryAbility_desc",
+      "value": "DeepSeek Harness Remote client for HarmonyOS"
+    }
+  ]
+}

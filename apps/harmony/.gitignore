@@ -1,0 +1,14 @@
+build/
+.hvigor/
+oh_modules/
+entry/build/
+entry/oh_modules/
+local.properties
+entry/src/main/ets/generated/*.js
+entry/src/main/ets/generated/*.map
+signing/
+build-profile.local.json5
+tsconfig.sdk.local.json
+entry/src/main/resources/rawfile/THIRD_PARTY_NOTICES.txt
+
+node_modules

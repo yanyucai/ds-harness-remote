@@ -1,0 +1,25 @@
+{
+  "name": "@dsh-remote/harmony",
+  "version": "0.6.3-harmony.29",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "check": "node scripts/check.mjs",
+    "test": "vitest run",
+    "build:surfaces": "node scripts/build-surfaces.mjs",
+    "bundle": "node scripts/bundle.mjs",
+    "build": "bash scripts/build.sh"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.0",
+    "typescript": "^5.7.3",
+    "vitest": "^2.1.8"
+  },
+  "dependencies": {
+    "@dsh-remote/crypto": "workspace:*",
+    "@dsh-remote/protocol": "workspace:*",
+    "@dsh-remote/client-core": "workspace:*",
+    "@dsh-remote/webrtc": "workspace:*",
+    "@noble/hashes": "^1.6.1"
+  }
+}

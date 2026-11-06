@@ -387,3 +387,11 @@ Typert Remote contract，不得在 Plugin Host 恢复 `sessions.*`、`session.se
 
 - [x] AGY 工作区/会话 catalog、空白新会话、历史/图片、流式、标题刷新与重连恢复
 - [ ] Android AGY APK 与真机/加密跨设备回归；每目录超过 100 个会话的分页体验
+
+## HarmonyOS NEXT native port (2026-11-01)
+
+Local v0.5.23-based `apps/harmony` preview is implemented; see [port report](harmonyos.md) and [feature matrix](../apps/harmony/README.md).
+Signed-device installation, actual Ark runtime / backend interoperability, P2P, background recovery, native tools, Bot/plugin/schedule UI and the remaining Android feature parity are still pending. A successful unsigned HAP build is not a device acceptance result.
+
+
+HarmonyOS harmony.2 follow-up (2026-11-01): independent bundle `io.github.dshremote.harmony` / build 6802 signed and installed via HoKit on HarmonyOS 测试设备; initial ArkUI login screen launch confirmed. Existing Android app retained. Actual login/backends and remaining feature/device acceptance stay pending.

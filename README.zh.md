@@ -58,6 +58,7 @@ Harness 始终运行在工作电脑上，原有的工作区、工具和项目配
 | DSH&nbsp;Desktop&nbsp;插件 | Remote 侧栏 | 已支持 | 装 `ds-harness-remote@0.6.3`；Host 也可以就是这台电脑 |
 | Web | 浏览器页面 | 已支持 | 打开 [https://dsh.r2049.cn](https://dsh.r2049.cn)，复用 Harness 原生界面 |
 | Android | 原生 App | 已支持 | 从 [Releases](https://github.com/liguobao/ds-harness-remote/releases/latest) 下载 APK，见 [Android 说明](apps/android/README.md) |
+| HarmonyOS NEXT | ArkUI 原生预览 | 实验性移植 | 基于 Android v0.5.23，见 [鸿蒙移植说明](apps/harmony/README.md) |
 | DSH Go | C佬精品 | 已支持 | 详情见：[ccch1mneyyy/dsh-go: DeepSeek Harness 的 Android 客户端。手机上直接跑，也能遥控你电脑上的 DSH。](https://github.com/ccch1mneyyy/dsh-go)
 | iOS | TestFlight 内测 | 内测 | 未公开上架，入口见 [issue #20](https://github.com/liguobao/ds-harness-remote/issues/20) |
 | 浏览器扩展 | Chrome | 仅入口 | 读取已登录 Web 的授权换取独立设备凭据、列出在线 Host、打开同源 Remote Web，不承载会话界面 |

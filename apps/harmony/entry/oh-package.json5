@@ -1,0 +1,9 @@
+{
+  "name": "entry",
+  "version": "0.5.23",
+  "description": "DSH Remote Entry HAP",
+  "main": "src/main/ets/entryability/EntryAbility.ets",
+  "author": "liguobao",
+  "license": "MIT",
+  "dependencies": {}
+}
