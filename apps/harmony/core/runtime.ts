@@ -822,6 +822,17 @@ export class HarmonyRuntime {
       else if (action === 'taskDelete') await this.deleteTask(input.id ?? '', input.name ?? '')
       else if (action === 'taskHistory') await this.loadTaskHistory(input.id ?? '', input.name ?? '')
       else if (action === 'bots') await this.loadBots()
+      else if (action === 'botHome') {
+        await this.loadBots()
+        this.view = 'botHome'
+        this.hostModes[this.browseScope()] = 'bot'
+        await prefWrite('hostModes', JSON.stringify(this.hostModes))
+      }
+      else if (action === 'agentHome') {
+        this.view = 'workspaces'
+        this.hostModes[this.browseScope()] = 'agent'
+        await prefWrite('hostModes', JSON.stringify(this.hostModes))
+      }
       else if (action === 'botViewReply') {
         const pending = botObject(this.botState?.views?.[this.session?.sessionId ?? ''])
         if (!this.botTarget || input.mode !== this.sessionKey() || input.name !== text(pending.id)) throw new Error('卡片已失效。')
@@ -1408,7 +1419,7 @@ export class HarmonyRuntime {
     this.saveViewPrefs()
   }
   private backendTabs(): BackendTab[] {
-    const names: Record<string, string> = { harness: 'DSH', codex: 'CodeX', opencode: 'OpenCode', cursor: 'Cursor', pi: 'Pi', claude: 'Claude', antigravity: 'Antigravity', hermes: 'Hermes' }
+    const names: Record<string, string> = { harness: 'DeepSeek', codex: 'CodeX', opencode: 'OpenCode', cursor: 'Cursor', pi: 'Pi', claude: 'Claude', antigravity: 'Antigravity', hermes: 'Hermes' }
     const counts = new Map<string, number>()
     for (const workspace of this.workspaces) {
       const id = workspace.backend ?? 'harness'

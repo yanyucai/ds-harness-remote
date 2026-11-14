@@ -1,6 +1,9 @@
 import { runtime } from '../RuntimeHost'
+import common from '@ohos.app.ability.common'
+import { HarmonyThemeColors, resolveHarmonyTheme } from '../theme/HarmonyTheme'
 import { ViewState, BotExtra, NamedOption, emptyState, CatalogRow, ActivityRow, JobRow, TaskDefinition, BotDefinition, BotRoom, BotRequest, DirectoryEntry } from '../models/ViewState'
 interface Choice { id: string; name: string }
+interface ChatAppearanceView { accent?: string }
 interface TaskTiming { kind?: string; at?: string; every_seconds?: number; daily?: TaskDaily; weekly?: TaskWeekly; cron?: TaskCron }
 interface TaskDaily { time: string; time_zone: string }
 interface TaskWeekly extends TaskDaily { weekdays: number[] }
@@ -41,6 +44,13 @@ export struct AlignmentPanel {
   @State roomMode: string = ''
   @State memoryText: string = ''
   @State operation: string = 'update-bot'
+  private theme(): HarmonyThemeColors {
+    let accent: string = 'deepseek'
+    try {
+      accent = (JSON.parse(this.state.chatAppearance) as ChatAppearanceView).accent ?? 'deepseek'
+    } catch {}
+    return resolveHarmonyTheme((getContext(this) as common.UIAbilityContext).config.colorMode === 0, accent)
+  }
   private t(value: string): string { return runtime.translate(value) }
   private run(action: string, payload: string = '{}'): void { runtime.perform(action,payload).catch(() => {}) }
   private bot(op: string, payload: BotPayload): void { this.run('botOperation',JSON.stringify({ mode:op,text:JSON.stringify(payload) })) }
@@ -72,14 +82,14 @@ export struct AlignmentPanel {
         ForEach(this.state.activity.rows.filter((row:ActivityRow)=>this.category==='all'||row.category===this.category),(row:ActivityRow)=>{
           Column({space:5}) {
             Text(`${row.status==='completed'?'✓':row.status==='in_progress'?'●':'○'} ${row.title}`).fontSize(15).width('100%')
-            Text(this.t(row.status)).fontSize(11).fontColor($r('sys.color.font_secondary')).width('100%')
+            Text(this.t(row.status)).fontSize(11).fontColor(this.theme().muted).width('100%')
             if(row.detail)Text(row.detail).fontSize(12).copyOption(CopyOptions.LocalDevice).width('100%')
             if(row.session&&this.state.sessions.some((session:CatalogRow)=>session.id===row.session))Button(this.t('打开对话')).onClick(()=>{this.run('session',JSON.stringify({id:row.session}));this.onClose()})
-          }.padding(12).width('100%').backgroundColor($r('sys.color.comp_background_tertiary')).borderRadius(12)
+          }.padding(12).width('100%').backgroundColor(this.theme().surfaceStrong).borderRadius(12)
         },(row:ActivityRow)=>`${row.category}|${row.id}|${row.status}|${row.title}`)
         Text(this.t('后台任务')).fontSize(16).width('100%')
         if(this.state.activity.loading)LoadingProgress().width(24).height(24)
-        if(this.state.activity.error)Text(this.state.activity.error).fontSize(12).fontColor('#C64B43')
+        if(this.state.activity.error)Text(this.state.activity.error).fontSize(12).fontColor(this.theme().danger)
         ForEach(this.state.activity.jobs,(job:JobRow)=>{
           Column({space:5}) {
             Text(job.label).fontSize(14).width('100%')
@@ -90,10 +100,10 @@ export struct AlignmentPanel {
               if(job.status==='running'||job.status==='stopping')Button(this.confirmation===job.id?this.t('确认停止'):this.t('停止'))
                 .onClick(()=>{if(this.confirmation===job.id){this.run('jobKill',JSON.stringify({id:job.id}));this.confirmation=''}else this.confirmation=job.id})
             }
-          }.padding(12).width('100%').backgroundColor($r('sys.color.comp_background_tertiary')).borderRadius(12)
+          }.padding(12).width('100%').backgroundColor(this.theme().surfaceStrong).borderRadius(12)
         },(job:JobRow)=>`${job.id}|${job.status}|${job.progress}`)
         if(this.state.activity.outputJob) {
-          if(this.state.activity.lossy)Text(this.t('部分输出已截断，仅显示末尾内容')).fontSize(11).fontColor('#9D6B20')
+          if(this.state.activity.lossy)Text(this.t('部分输出已截断，仅显示末尾内容')).fontSize(11).fontColor(this.theme().warning)
           Text(this.state.activity.output||this.t('等待输出')).fontFamily('monospace').fontSize(12).copyOption(CopyOptions.LocalDevice).width('100%')
         }
         if(this.state.activity.rows.length===0&&this.state.activity.jobs.length===0&&!this.state.activity.loading)Text(this.t('暂无活动')).padding(16)
@@ -122,7 +132,7 @@ export struct AlignmentPanel {
               }
               Button(row.archived?this.t('取消归档'):this.t('归档')).fontSize(11).enabled(['harness','codex','opencode'].includes(row.backend))
                 .onClick(()=>{this.run(row.archived?'sessionManage':'archive',JSON.stringify({id:row.id,mode:'unarchive'}))})
-            }.padding(10).width('100%').backgroundColor($r('sys.color.comp_background_tertiary')).borderRadius(12)
+            }.padding(10).width('100%').backgroundColor(this.theme().surfaceStrong).borderRadius(12)
           }
         },(row:CatalogRow)=>`${row.id}|${row.name}|${row.archived}|${this.state.pinnedSessionIds.includes(row.id)}`)
       }.width('100%').height(Math.min(380, this.availableHeight - 100))
@@ -187,7 +197,7 @@ export struct AlignmentPanel {
               {id:'computer',name:'电脑操控'},{id:'schedules',name:'定时任务'},{id:'usage',name:'用量'},
               {id:'secrets',name:'密钥'},{id:'memory',name:'记忆'}
             ],(item:Choice)=>{
-              Button(this.t(item.name)).fontSize(12).backgroundColor(this.state.botSettingsPage===item.id?this.state.accentColor:'#333333')
+              Button(this.t(item.name)).fontSize(12).backgroundColor(this.state.botSettingsPage===item.id?this.state.accentColor:this.theme().surfaceStrong)
                 .onClick(()=>{this.run('botSettings',JSON.stringify({name:item.id}))})
             })
           }
@@ -283,7 +293,7 @@ export struct AlignmentPanel {
             .value(this.t('群管理员')).onSelect((index:number)=>{this.selectedSession=this.state.botDefinitions.filter((bot:BotDefinition)=>this.members.includes(bot.id))[index].id})
           Button(this.t('保存群组')).enabled(this.name.trim().length>0&&this.members.length>=2).onClick(()=>{this.bot(this.selected?'update-room':'create-room',{id:this.selected||undefined,name:this.name,members:this.members,notice:this.body,admin:this.selectedSession||this.members[0]})})
         }
-        if(this.selected)Button(this.confirmation===this.selected?this.t('确认删除'):this.t('删除')).fontColor('#C64B43')
+        if(this.selected)Button(this.confirmation===this.selected?this.t('确认删除'):this.t('删除')).fontColor(this.theme().danger)
           .onClick(()=>{if(this.confirmation===this.selected){this.bot(this.botKind==='bot'?'delete-bot':'delete-room',{id:this.selected});this.selected='';this.confirmation=''}else this.confirmation=this.selected})
         ForEach(this.state.botApprovals,(request:BotRequest)=>{
           Text(request.title+'\n'+request.detail).fontSize(13)
@@ -307,15 +317,15 @@ export struct AlignmentPanel {
     Column({space:12}) {
       Row() {
         Text(this.t(this.mode==='activity'?'会话活动':this.mode==='sessions'?'管理对话':this.mode==='tasks'?'编辑自动化任务':this.mode==='directory'?'选择主机目录':'智能体与群组')).fontSize(19).fontWeight(FontWeight.Bold).layoutWeight(1)
-        Button('✕').backgroundColor(Color.Transparent).fontColor($r('sys.color.font_primary')).onClick(()=>{this.onClose()})
+        Button('✕').backgroundColor(Color.Transparent).fontColor(this.theme().ink).onClick(()=>{this.onClose()})
       }.width('100%')
-      if(this.state.error) Text(this.state.error).fontSize(13).fontColor('#C64B43').width('100%')
-      if(this.state.notice) Text(this.state.notice).fontSize(12).fontColor($r('sys.color.font_secondary')).width('100%')
+      if(this.state.error) Text(this.state.error).fontSize(13).fontColor(this.theme().danger).width('100%')
+      if(this.state.notice) Text(this.state.notice).fontSize(12).fontColor(this.theme().muted).width('100%')
       if(this.mode==='activity')this.activity()
       else if(this.mode==='sessions')this.sessions()
       else if(this.mode==='directory')this.directory()
       else if(this.mode==='tasks')this.taskForm()
       else this.bots()
-    }.padding(20).width('100%').backgroundColor($r('sys.color.background_primary')).borderRadius({topLeft:24,topRight:24})
+    }.padding(20).width('100%').backgroundColor(this.theme().background).borderRadius({topLeft:24,topRight:24})
   }
 }

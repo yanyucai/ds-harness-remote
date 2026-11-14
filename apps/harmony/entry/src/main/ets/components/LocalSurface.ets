@@ -65,7 +65,7 @@ export struct LocalSurface {
           this.lastRequest = id; this.confirming = true
           const captured: string = this.payload
           void promptAction.showDialog({ title: '发送到当前对话', message: message.text,
-            buttons: [{ text: '取消', color: '#888888' }, { text: '发送', color: '#4B78E6' }] })
+            buttons: [{ text: '取消', color: '#59606D' }, { text: '发送', color: '#4D6BFE' }] })
             .then(async (result: promptAction.ShowDialogSuccessResponse) => {
               const ok: boolean = result.index === 1 && this.ready && this.payload === captured ? await this.onAction(raw) : false
               if (this.ready) this.controller.runJavaScript(`window.__diuiReply&&window.__diuiReply(${id},${ok},"Delivery not confirmed")`).catch(() => {})
@@ -134,7 +134,7 @@ export struct LocalSurface {
   }
   build() {
     Column() {
-      if (this.failure) { Text(this.failure).fontSize(12).fontColor('#C64B43') }
+      if (this.failure) { Text(this.failure).fontSize(12).lineHeight(16).fontColor('#C2362F') }
       if (this.kind === 'pdf') {
         Row({ space: 10 }) {
           Button('‹').onClick(() => { this.controller.runJavaScript(`window.showPage(${Math.max(1,this.pdfPage-1)})`) })
@@ -145,7 +145,7 @@ export struct LocalSurface {
         }.width('100%')
       }
       Web({ src: this.source(), controller: this.controller })
-        .backgroundColor(this.dark ? '#202124' : '#FFFFFF')
+        .backgroundColor(this.dark ? '#161A21' : '#FFFFFF')
         .javaScriptAccess(true).domStorageAccess(false).databaseAccess(false).fileAccess(false)
         .javaScriptProxy({ object: this.bridge, name: 'dshNative', methodList: ['post'], controller: this.controller })
         .onPageEnd(() => {
