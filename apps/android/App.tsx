@@ -1,48 +1,51 @@
-import { hydrateBrowseMemory, useBrowseMemory, browsePreference, browseScope, saveHostMode } from './src/services/browse-memory'
+import { hydrateBrowseMemory, useBrowseMemory, browseKey, browsePreference, browseScope, saveHostMode } from './src/services/browse-memory'
 import { startBrowseTracking } from './src/services/browse-tracking'
-import { useEffect, useRef, useState } from 'react'
-import { AppState, BackHandler, Linking, StyleSheet, Text, View } from 'react-native'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { Animated, AppState, BackHandler, Easing, Keyboard, Linking, StyleSheet, Text, View } from 'react-native'
 import NetInfo from '@react-native-community/netinfo'
 import { useLocales } from 'expo-localization'
 import * as SplashScreen from 'expo-splash-screen'
 import { StatusBar } from 'expo-status-bar'
 import { SafeAreaProvider, SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 import { ChatScreen } from './src/screens/chat-screen'
-import { ConnectionScreen, DeviceDetailScreen, DevicesScreen } from './src/screens/device-screens'
+import { ConnectionScreen, DeviceDetailScreen } from './src/screens/device-screens'
 import { HostSwitcherSheet } from './src/screens/host-switcher-sheet'
 import { RemoteHostsScreen } from './src/screens/remote-hosts-screen'
-import { AboutScreen, HomeActionsMenu, ServerSetupScreen, SettingsScreen } from './src/screens/setup-screens'
-import { WorkspacesScreen } from './src/screens/workspaces-screen'
+import { AboutScreen, DiagnosticsScreen, HomeActionsMenu, ServerSetupScreen, SettingsScreen, useStartupUpdateCheck } from './src/screens/setup-screens'
 import { stopConnectionRecovery, useAppStore } from './src/state/store'
+import { useBotTeamStore } from './src/state/bot-store'
 import { ForegroundConnectionRecovery } from './src/services/connection-recovery'
-import type { WorkspaceShortcut } from './src/types'
 import { resolveStartupAutoConnect } from './src/lib/auto-connect'
+import {
+  isRouteActiveScreen,
+  isSheetConnectionRoute,
+  resolveTopLevelHardwareBack,
+  shouldHideSplashScreen,
+  shouldSuppressAutoSessionSelect,
+  type AppRoute,
+} from './src/lib/navigation'
 import {
   networkRouteForNativeType,
   shouldReconnectForNetworkRoute,
   type NetworkRoute,
 } from './src/lib/network-route'
 import { Button, ErrorBanner } from './src/ui/components'
+import { NavigationFocusProvider } from './src/ui/mention-popover'
+import { easingCurve, motionTokens } from './src/ui/motion'
+import { dismissClosingSheets } from './src/ui/sheet'
 import { spacing, type } from './src/ui/theme'
 import { ThemeProvider, useTheme, type ThemeColors } from './src/ui/theme-context'
 import { MermaidRendererHost } from './src/ui/mermaid/mermaid-renderer'
+import { AlertHost } from './src/ui/alert'
+import { useReduceMotion } from './src/ui/use-reduce-motion'
 import { useThemedStyles } from './src/ui/use-themed-styles'
 import { strings as zhCN } from './src/locales/i18n'
 import { sessionBackendFromId } from './src/lib/session-backend'
 // Keep the native first frame visible until boot completes. The native splash
-// is the only startup view; the app then enters the login or device route.
+// is the only startup view; the app then enters the login or chat route.
 void SplashScreen.preventAutoHideAsync().catch(() => undefined)
 
-type Route =
-  | { name: 'server' }
-  | { name: 'devices' }
-  | { name: 'remote-hosts' }
-  | { name: 'device'; deviceId: string; source?: 'workspaces' }
-  | { name: 'connecting'; deviceId: string; focusWorkspaceKey?: string; sessionId?: string }
-  | { name: 'workspaces'; focusWorkspaceKey?: string; botConversationId?: string; source?: 'chat' }
-  | { name: 'chat' }
-  | { name: 'settings' }
-  | { name: 'about' }
+type Route = AppRoute
 
 export default function App() {
   const locales = useLocales()
@@ -59,6 +62,7 @@ export default function App() {
       <SafeAreaProvider>
         <AppShell />
         <MermaidRendererHost />
+        <AlertHost />
       </SafeAreaProvider>
     </ThemeProvider>
   )
@@ -86,12 +90,14 @@ function ThemedStatusBar() {
 function AppNavigator() {
   const bootPhase = useAppStore(state => state.bootPhase)
   const browseReady = useBrowseMemory(state => state.ready)
+  const [bootstrapComplete, setBootstrapComplete] = useState(false)
   const [pendingConversation, setPendingConversation] = useState<{deviceId: string; sessionId: string}>()
   const [linksReady, setLinksReady] = useState(false)
   const autoRestored = useRef(false)
   const config = useAppStore(state => state.config)
   const devices = useAppStore(state => state.devices)
   const selectedDevice = useAppStore(state => state.selectedDevice)
+  const connectionPhase = useAppStore(state => state.connection.phase)
   const hostScope = browseScope({ config, selectedDevice })
   const botMode = useBrowseMemory(state => state.hostModes[hostScope] === 'bot')
   const autoConnectHost = useBrowseMemory(state => state.autoConnectHost)
@@ -103,6 +109,9 @@ function AppNavigator() {
   const setOffline = useAppStore(state => state.setOffline)
   const clearError = useAppStore(state => state.clearError)
   const [routes, setRoutes] = useState<Route[]>([{ name: 'server' }])
+  const [initialRouteChosen, setInitialRouteChosen] = useState(false)
+  const [resolvingKnownSession, setResolvingKnownSession] = useState(false)
+  const [signingOut, setSigningOut] = useState(false)
   const [homeMenuOpen, setHomeMenuOpen] = useState(false)
   const [hostSwitcherOpen, setHostSwitcherOpen] = useState(false)
   const [serverEditorOpen, setServerEditorOpen] = useState(false)
@@ -115,21 +124,67 @@ function AppNavigator() {
   const insets = useSafeAreaInsets()
   const { colors } = useTheme()
   const styles = useThemedStyles(createStyles)
+  useStartupUpdateCheck(bootPhase === 'ready')
 
   useEffect(() => {
-    if (bootPhase === 'error' || (bootPhase === 'ready' && browseReady)) {
+    if (shouldHideSplashScreen({ bootPhase, browseReady, initialRouteChosen })) {
       void SplashScreen.hideAsync().catch(() => undefined)
     }
-  }, [bootPhase, browseReady])
+  }, [bootPhase, browseReady, initialRouteChosen])
 
-  const push = (next: Route) => setRoutes(current => [...current, next])
-  const replace = (next: Route) => setRoutes(current => [...current.slice(0, -1), next])
-  const pop = () => setRoutes(current => current.length > 1 ? current.slice(0, -1) : current)
-  const reset = (next: Route) => setRoutes([next])
+  const push = (next: Route) => {
+    Keyboard.dismiss()
+    dismissClosingSheets()
+    setRoutes(current => [...current, next])
+  }
+  const replace = (next: Route) => {
+    Keyboard.dismiss()
+    dismissClosingSheets()
+    setRoutes(current => [...current.slice(0, -1), next])
+  }
+  const pop = () => {
+    Keyboard.dismiss()
+    setRoutes(current => current.length > 1 ? current.slice(0, -1) : current)
+  }
+  const reset = (next: Route) => {
+    Keyboard.dismiss()
+    dismissClosingSheets()
+    setRoutes([next])
+  }
+
+  const selectOfflineTrustedDevice = (device: (typeof devices)[number], preferredSessionId?: string) => {
+    const state = useAppStore.getState()
+    const scope = browseScope({ config: state.config, selectedDevice: device })
+    const memory = useBrowseMemory.getState()
+    const cached = device.trusted ? memory.catalogs[scope] : undefined
+    const sameHost = state.selectedDevice?.deviceId === device.deviceId
+    const nextSessions = sameHost && state.sessions.length > 0 ? state.sessions : cached?.sessions ?? []
+    const nextWorkspaces = sameHost && state.workspaces.length > 0 ? state.workspaces : cached?.workspaces ?? []
+    useAppStore.setState(current => ({
+      selectedDevice: device,
+      workspaces: nextWorkspaces,
+      sessions: nextSessions,
+      ...(!sameHost ? { selectedSession: undefined } : {}),
+      connection: { phase: 'offline', stats: { mode: 'Disconnected', connected: false } },
+      error: undefined,
+    }))
+    const candidateId = preferredSessionId ?? (memory.last?.scope === scope ? memory.last.sessionId : undefined)
+    const targetSession =
+      (candidateId ? nextSessions.find(item => item.sessionId === candidateId) ?? memory.entries[browseKey(scope, candidateId)]?.session : undefined)
+      ?? [...nextSessions].sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0))[0]
+    if (targetSession !== undefined) {
+      void openSession(targetSession)
+    }
+  }
 
   const openDevice = (device: (typeof devices)[number]) => {
     if (selectedDevice?.deviceId === device.deviceId && useAppStore.getState().connection.phase === 'connected') {
-      reset({ name: 'workspaces' })
+      reset({ name: 'chat' })
+      return
+    }
+    if (device.trusted && !device.online) {
+      selectOfflineTrustedDevice(device)
+      reset({ name: 'chat' })
       return
     }
     push(device.trusted && device.online
@@ -137,63 +192,58 @@ function AppNavigator() {
       : { name: 'device', deviceId: device.deviceId })
   }
 
-  const goHomeWorkspaces = (focusWorkspaceKey?: string) => reset({
-    name: 'workspaces',
-    ...(focusWorkspaceKey === undefined ? {} : { focusWorkspaceKey }),
-  })
-  // Workspaces is the post-connect home, so its back target is the device list.
-  const backFromWorkspaces = () => {
-    if (routes.length > 1) pop()
-    else reset({ name: 'devices' })
-  }
+  const goHomeChat = () => reset({ name: 'chat' })
   const openHomeMenu = () => setHomeMenuOpen(true)
 
-  /**
-   * Saved shortcuts (favorites, or recent visits while Favorites is empty) land
-   * in the conversation itself: open the workspace's most recently updated
-   * session and stack it on top of the workspaces screen so back returns to the
-   * workspace. Workspaces without any conversation yet fall back to revealing
-   * the workspace.
-   */
   const openShortcutSession = async (workspaceKey: string) => {
-    const session = await useAppStore.getState().openFavoriteWorkspaceSession(workspaceKey)
-    setRoutes(session === undefined
-      ? [{ name: 'workspaces', focusWorkspaceKey: workspaceKey }]
-      : [{ name: 'workspaces', focusWorkspaceKey: workspaceKey }, { name: 'chat' }])
+    await useAppStore.getState().openFavoriteWorkspaceSession(workspaceKey)
+    reset({ name: 'chat' })
   }
 
-  // A home-screen shortcut connects to its host first when it is not the current one.
-  const openShortcut = (shortcut: WorkspaceShortcut) => {
-    const device = devices.find(item => item.deviceId === shortcut.deviceId)
-    if (device === undefined) {
-      useAppStore.getState().clearError()
-      useAppStore.setState({ error: zhCN.app.deviceUnavailable })
-      return
-    }
-    if (selectedDevice?.deviceId === device.deviceId
-      && useAppStore.getState().connection.phase === 'connected') {
-      void openShortcutSession(shortcut.key)
-      return
-    }
-    push(device.trusted && device.online
-      ? { name: 'connecting', deviceId: device.deviceId, focusWorkspaceKey: shortcut.key }
-      : { name: 'device', deviceId: device.deviceId })
-  }
-
-  useEffect(() => {void hydrateBrowseMemory(); void bootstrap()}, [bootstrap])
+  useEffect(() => {
+    let active = true
+    void hydrateBrowseMemory()
+    // bootPhase becomes ready before bootstrap's account wrapper finishes
+    // refreshing the device directory. Restore only after that refresh settles.
+    void bootstrap().then(() => { if (active) setBootstrapComplete(true) })
+    return () => { active = false }
+  }, [bootstrap])
   useEffect(() => {if (browseReady) return startBrowseTracking()}, [browseReady])
 
+  const externalOpenRevision = useRef(0)
   const openKnownSession = async (id: string) => {
-    const backend = sessionBackendFromId(id)
-    const expectedScope = browseScope(useAppStore.getState())
-    await useAppStore.getState().refreshWorkspaces(backend)
-    if (browseScope(useAppStore.getState()) !== expectedScope || useAppStore.getState().connection.phase !== 'connected') return
-    const state = useAppStore.getState(), target = state.sessions.find(item => item.sessionId === id)
-    if (target === undefined) {goHomeWorkspaces(); useAppStore.setState({error: zhCN.comfort.conversationMissing}); return}
-    const pending = openSession(target)
-    if (useAppStore.getState().selectedSession?.sessionId === id) setRoutes([{name: 'workspaces'}, {name: 'chat'}])
-    const ok = await pending
-    if (ok && routeRef.current.name === 'connecting') setRoutes([{name: 'workspaces'}, {name: 'chat'}])
+    const revision = ++externalOpenRevision.current
+    setResolvingKnownSession(true)
+    try {
+      const backend = sessionBackendFromId(id)
+      const expectedScope = browseScope(useAppStore.getState())
+      const isCurrent = () => revision === externalOpenRevision.current
+        && browseScope(useAppStore.getState()) === expectedScope
+        && useAppStore.getState().connection.phase === 'connected'
+      await useAppStore.getState().refreshWorkspaces(backend)
+      if (!isCurrent()) return
+      const state = useAppStore.getState(), target = state.sessions.find(item => item.sessionId === id)
+      if (target === undefined) {
+        setHostSwitcherOpen(false)
+        goHomeChat()
+        useAppStore.setState({ error: zhCN.comfort.conversationMissing })
+        return
+      }
+      const ok = await openSession(target)
+      if (!isCurrent()) return
+      if (ok && useAppStore.getState().selectedSession?.sessionId === id) {
+        saveHostMode(expectedScope, 'agent')
+        setHostSwitcherOpen(false)
+        reset({ name: 'chat', externalOpenRevision: revision })
+      } else if (routeRef.current.name === 'connecting') {
+        setHostSwitcherOpen(false)
+        goHomeChat()
+      }
+    } finally {
+      if (revision === externalOpenRevision.current) {
+        setResolvingKnownSession(false)
+      }
+    }
   }
   useEffect(() => {
     const receive = (url: string) => {
@@ -209,7 +259,7 @@ function AppNavigator() {
     return () => subscription.remove()
   }, [])
   useEffect(() => {
-    if (bootPhase !== 'ready' || !browseReady || !linksReady || !didChooseInitialRoute.current || reauthRequired || devices.length === 0) return
+    if (bootPhase !== 'ready' || !bootstrapComplete || !browseReady || !linksReady || !didChooseInitialRoute.current || reauthRequired) return
     if (pendingConversation !== undefined) {
       autoRestored.current = true
       const target = pendingConversation
@@ -220,10 +270,10 @@ function AppNavigator() {
       else push({name: 'connecting', deviceId: device.deviceId, sessionId: target.sessionId})
       return
     }
-    if (autoRestored.current || !didChooseInitialRoute.current || route.name !== 'devices') return
+    if (autoRestored.current || !didChooseInitialRoute.current || route.name !== 'chat') return
     autoRestored.current = true
     const memory = useBrowseMemory.getState()
-    if (routeRef.current.name !== 'devices') return
+    if (routeRef.current.name !== 'chat') return
     const target = resolveStartupAutoConnect({
       devices,
       autoConnectHost: memory.autoConnectHost,
@@ -237,10 +287,22 @@ function AppNavigator() {
       push({
         name: 'connecting',
         deviceId: target.device.deviceId,
+        sheet: true,
         ...(target.sessionId === undefined ? {} : { sessionId: target.sessionId }),
       })
+    } else if (useAppStore.getState().selectedDevice === undefined) {
+      const offlineTargetId = memory.last?.deviceId ?? useAppStore.getState().lastConnectedDeviceId
+      const offlineDevice =
+        (offlineTargetId ? devices.find(item => item.deviceId === offlineTargetId && item.trusted) : undefined)
+        ?? devices.find(item => item.trusted)
+      if (offlineDevice !== undefined) {
+        selectOfflineTrustedDevice(offlineDevice, memory.last?.sessionId)
+      }
+      if (offlineDevice === undefined || devices.some(item => item.trusted && item.online)) {
+        setHostSwitcherOpen(true)
+      }
     }
-  }, [bootPhase, browseReady, linksReady, devices, pendingConversation, reauthRequired, route.name])
+  }, [bootPhase, bootstrapComplete, browseReady, linksReady, devices, pendingConversation, reauthRequired, route.name])
 
   // Zhihu OAuth deep link: dshremote://oauth?token=... completes the
   // account authorization started from the server setup screen.
@@ -270,7 +332,8 @@ function AppNavigator() {
         }
         void completeOAuth(token).then(ok => {
           if (ok) {
-            reset({ name: 'devices' })
+            autoRestored.current = false
+            reset({ name: 'chat' })
             // Keep the setup screen in its loading state until navigation is
             // scheduled, then release the one-shot OAuth state.
             useAppStore.setState({ pendingOAuthBaseUrl: undefined, pendingOAuthLoginMethod: undefined })
@@ -290,10 +353,12 @@ function AppNavigator() {
     didChooseInitialRoute.current = true
     if (config === undefined || reauthRequired) {
       reset({ name: 'server' })
+      setInitialRouteChosen(true)
       return
     }
     // Resolve sign-in first; the optional resume preference runs after this route.
-    reset({ name: 'devices' })
+    reset({ name: 'chat' })
+    setInitialRouteChosen(true)
   }, [bootPhase, config, reauthRequired])
 
   // Session expired while already navigating — send the user to sign-in.
@@ -304,55 +369,57 @@ function AppNavigator() {
   }, [bootPhase, reauthRequired, route.name])
 
   useEffect(() => {
-    if (route.name !== 'chat' && route.name !== 'workspaces' && hostSwitcherOpen) {
+    if (route.name !== 'chat' && hostSwitcherOpen) {
       setHostSwitcherOpen(false)
     }
-  }, [route.name, hostSwitcherOpen])
+    if (route.name !== 'server' && homeMenuOpen) {
+      setHomeMenuOpen(false)
+    }
+  }, [route.name, hostSwitcherOpen, homeMenuOpen])
 
   const backFromRemoteHosts = () => {
-    if (useAppStore.getState().selectedDevice === undefined && routes.some(entry => entry.name === 'chat' || entry.name === 'workspaces')) {
-      reset({ name: 'devices' })
-      return
-    }
-    pop()
+    if (routes.length > 1) pop()
+    else reset({ name: 'chat' })
+  }
+
+  const homeMenuVisible = homeMenuOpen && route.name === 'server'
+  const backStateRef = useRef({
+    signingOut,
+    hostSwitcherOpen,
+    homeMenuOpen: homeMenuVisible,
+    route,
+    routesLength: routes.length,
+  })
+  backStateRef.current = {
+    signingOut,
+    hostSwitcherOpen,
+    homeMenuOpen: homeMenuVisible,
+    route,
+    routesLength: routes.length,
   }
 
   useEffect(() => {
     const subscription = BackHandler.addEventListener('hardwareBackPress', () => {
-      if (hostSwitcherOpen) {
-        setHostSwitcherOpen(false)
-        return true
+      const state = backStateRef.current
+      const outcome = resolveTopLevelHardwareBack(state)
+      switch (outcome.action) {
+        case 'consume':
+          return true
+        case 'close-host-switcher':
+          setHostSwitcherOpen(false)
+          return true
+        case 'close-home-menu':
+          setHomeMenuOpen(false)
+          return true
+        case 'delegate':
+          return false
+        case 'pop':
+          pop()
+          return true
       }
-      if (homeMenuOpen) {
-        setHomeMenuOpen(false)
-        return true
-      }
-      // ConnectionScreen owns hardware back (and may swallow it while connecting).
-      if (route.name === 'connecting') return false
-      const current = routeRef.current
-      if (current.name === 'remote-hosts' && useAppStore.getState().selectedDevice === undefined && routes.some(entry => entry.name === 'chat' || entry.name === 'workspaces')) {
-        reset({ name: 'devices' })
-        return true
-      }
-      if (current.name === 'workspaces' && botMode && current.botConversationId !== undefined) {
-        setRoutes(entries => entries.map((entry, index) => index === entries.length - 1 && entry.name === 'workspaces' ? { ...entry, botConversationId: undefined } : entry))
-        return true
-      }
-      // The workspaces home steps back to the device list instead of exiting.
-      if (routes.length <= 1) {
-        if (route.name !== 'workspaces') return false
-        reset({ name: 'devices' })
-        return true
-      }
-      if (current.name === 'workspaces' && current.source === 'chat') {
-        reset({ name: 'devices' })
-        return true
-      }
-      pop()
-      return true
     })
     return () => subscription.remove()
-  }, [hostSwitcherOpen, homeMenuOpen, route.name, routes, botMode])
+  }, [])
 
   useEffect(() => {
     const recovery = new ForegroundConnectionRecovery(
@@ -406,113 +473,173 @@ function AppNavigator() {
       backgrounded.current = false
       // Keep healthy carriers, but verify an encrypted round trip before
       // trusting a socket that merely remained locally "open" while asleep.
-      void useAppStore.getState().resumeConnection()
+      void useAppStore.getState().resumeConnection().then(() => {
+        if (useAppStore.getState().connection.phase === 'connected' && useBotTeamStore.getState().state !== undefined) {
+          void useBotTeamStore.getState().refreshLive({ forceFull: true })
+        }
+      })
     })
     return () => subscription.remove()
   }, [reconnect])
 
-  if (bootPhase === 'error') return <BootError onRetry={() => void bootstrap()} message={error} />
-  if (bootPhase === 'loading' || !browseReady) return null
-
-  const deviceForRoute = route.name === 'device' || route.name === 'connecting'
-    ? devices.find(device => device.deviceId === route.deviceId) ?? selectedDevice
+  const resolveDeviceForRoute = (target: Route) => target.name === 'device' || target.name === 'connecting'
+    ? devices.find(device => device.deviceId === target.deviceId)
+      ?? (selectedDevice?.deviceId === target.deviceId ? selectedDevice : undefined)
     : undefined
-  const devicesIsRoot = route.name === 'devices' && routes.length === 1
-  const homeMenuVisible = homeMenuOpen && (route.name === 'server' || route.name === 'workspaces' || devicesIsRoot)
+  const deviceForRoute = resolveDeviceForRoute(route)
+  const startupConnection = isSheetConnectionRoute(route)
+
+  useEffect(() => {
+    if (bootPhase === 'ready' && startupConnection && deviceForRoute === undefined) {
+      pop()
+    }
+  }, [bootPhase, startupConnection, deviceForRoute])
+
+  if (bootPhase === 'error') return <BootError onRetry={() => void bootstrap()} message={error} />
+  if (bootPhase === 'loading' || !browseReady || !initialRouteChosen) return null
+
+  const overlayVisible = hostSwitcherOpen || homeMenuVisible || (startupConnection && deviceForRoute !== undefined)
+  const suppressAutoSelect = shouldSuppressAutoSessionSelect({
+    botMode,
+    routeName: route.name,
+    connectionPhase,
+    resolvingKnownSession: resolvingKnownSession || pendingConversation !== undefined,
+  })
+
+  const renderRouteScreen = (entry: Route, index: number) => {
+    const active = isRouteActiveScreen(routes, index, overlayVisible)
+    switch (entry.name) {
+      case 'server':
+        return (
+          <ServerSetupScreen
+            serverExpanded={serverEditorOpen}
+            setServerExpanded={setServerEditorOpen}
+            onMore={openHomeMenu}
+            onBack={routes.length > 1 ? pop : undefined}
+            onComplete={() => {
+              autoRestored.current = false
+              reset({ name: 'chat' })
+            }}
+          />
+        )
+      case 'remote-hosts':
+        return (
+          <RemoteHostsScreen
+            onBack={backFromRemoteHosts}
+            onSelectDevice={openDevice}
+            onOpenDeviceDetail={device => push({ name: 'device', deviceId: device.deviceId })}
+            onSignedOut={() => reset({ name: 'server' })}
+            autoConnectHost={autoConnectHost}
+            onToggleAutoConnectHost={value => browsePreference({ autoConnectHost: value })}
+          />
+        )
+      case 'connecting': {
+        const entryDevice = resolveDeviceForRoute(entry)
+        if (entryDevice === undefined) return <MissingRoute onBack={() => reset({ name: 'chat' })} />
+        return (
+          <ConnectionScreen
+            device={entryDevice}
+            onBack={() => {
+              if (routes.length > 1) pop()
+              else reset({ name: 'chat' })
+            }}
+            onConnected={() => {
+              if (entry.sessionId !== undefined) void openKnownSession(entry.sessionId)
+              else if (entry.focusWorkspaceKey === undefined) goHomeChat()
+              else void openShortcutSession(entry.focusWorkspaceKey)
+            }}
+          />
+        )
+      }
+      case 'device': {
+        const entryDevice = resolveDeviceForRoute(entry)
+        if (entryDevice === undefined) return <MissingRoute onBack={() => reset({ name: 'chat' })} />
+        return (
+          <DeviceDetailScreen
+            device={entryDevice}
+            onBack={pop}
+            onConnect={() => replace({ name: 'connecting', deviceId: entryDevice.deviceId })}
+            onWorkspaces={goHomeChat}
+          />
+        )
+      }
+      case 'chat':
+        return (
+          <ChatScreen
+            active={active}
+            suppressAutoSelect={suppressAutoSelect}
+            botMode={botMode}
+            externalOpenRevision={entry.externalOpenRevision}
+            botConversationId={entry.botConversationId}
+            onBotModeChange={next => {
+              saveHostMode(hostScope, next ? 'bot' : 'agent')
+              setRoutes(current => current.map(item => item.name === 'chat' ? { ...item, botConversationId: undefined } : item))
+            }}
+            onSelectBot={botConversationId => setRoutes(current => current.map(item => item.name === 'chat' ? { ...item, botConversationId } : item))}
+            onBack={pop}
+            onOpenHostSwitcher={() => setHostSwitcherOpen(true)}
+            onOpenSettings={() => push({ name: 'settings' })}
+            onOpenAbout={() => push({ name: 'about' })}
+            onOpenDeviceInfo={() => {
+              if (selectedDevice !== undefined) push({ name: 'device', deviceId: selectedDevice.deviceId })
+              else setHostSwitcherOpen(true)
+            }}
+          />
+        )
+      case 'settings':
+        return (
+          <SettingsScreen
+            active={active}
+            onBack={pop}
+            onSigningOutChange={setSigningOut}
+            onReset={() => reset({ name: 'server' })}
+            onOpenDiagnostics={() => push({ name: 'diagnostics' })}
+            onOpenAbout={() => push({ name: 'about' })}
+          />
+        )
+      case 'diagnostics':
+        return <DiagnosticsScreen onBack={pop} />
+      case 'about':
+        return <AboutScreen onBack={pop} />
+    }
+  }
 
   return (
     <View style={styles.flex}>
-      {route.name === 'server' && <ServerSetupScreen serverExpanded={serverEditorOpen} setServerExpanded={setServerEditorOpen} onMore={openHomeMenu} onBack={routes.length > 1 ? pop : undefined} onComplete={() => reset({ name: 'devices' })} />}
-      {route.name === 'devices' && (
-        <DevicesScreen
-          onDevice={openDevice}
-          onBack={devicesIsRoot ? undefined : pop}
-          onMore={devicesIsRoot ? openHomeMenu : undefined}
-          onShortcut={devicesIsRoot ? openShortcut : undefined}
-        />
-      )}
-      {route.name === 'remote-hosts' && (
-        <RemoteHostsScreen
-          onBack={backFromRemoteHosts}
-          onSelectDevice={openDevice}
-          onOpenDeviceDetail={device => push({ name: 'device', deviceId: device.deviceId })}
-          onSignedOut={() => reset({ name: 'server' })}
-          autoConnectHost={autoConnectHost}
-          onToggleAutoConnectHost={value => browsePreference({ autoConnectHost: value })}
-        />
-      )}
-      {route.name === 'connecting' && deviceForRoute !== undefined && (
-        <ConnectionScreen
-          device={deviceForRoute}
-          onBack={() => {
-            if (routes.length > 1) pop()
-            else reset({ name: 'devices' })
-          }}
-          onConnected={() => {
-            if (route.sessionId !== undefined) void openKnownSession(route.sessionId)
-            else if (route.focusWorkspaceKey === undefined) goHomeWorkspaces()
-            else void openShortcutSession(route.focusWorkspaceKey)
-          }}
-        />
-      )}
-      {route.name === 'connecting' && deviceForRoute === undefined && <MissingRoute onBack={() => reset({ name: 'devices' })} />}
-      {route.name === 'device' && deviceForRoute !== undefined && <DeviceDetailScreen
-        device={deviceForRoute}
-        onBack={pop}
-        onConnect={() => replace({ name: 'connecting', deviceId: deviceForRoute.deviceId })}
-        onWorkspaces={route.source === 'workspaces' ? undefined : goHomeWorkspaces}
-      />}
-      {route.name === 'device' && deviceForRoute === undefined && <MissingRoute onBack={() => reset({ name: 'devices' })} />}
-      {route.name === 'workspaces' && <WorkspacesScreen
-        botMode={botMode}
-        onMore={openHomeMenu}
-        botConversationId={route.botConversationId}
-        onBotMode={next => {
-          saveHostMode(hostScope, next ? 'bot' : 'agent')
-          setRoutes(current => current.map((entry, index) => index === current.length - 1 && entry.name === 'workspaces' ? { ...entry, botConversationId: undefined } : entry))
-        }}
-        onSelectBot={botConversationId => setRoutes(current => current.map((entry, index) => index === current.length - 1 && entry.name === 'workspaces' ? { ...entry, botConversationId } : entry))}
-        onBack={route.source === 'chat' ? () => reset({ name: 'devices' }) : backFromWorkspaces}
-        onOpenDevices={() => reset({ name: 'devices' })}
-        onSession={() => push({ name: 'chat' })}
-        focusWorkspaceKey={route.focusWorkspaceKey}
-        onDeviceInfo={() => {
-          if (selectedDevice !== undefined) push({ name: 'device', deviceId: selectedDevice.deviceId, source: 'workspaces' })
-        }}
-      />}
-      {route.name === 'chat' && <ChatScreen
-        onBack={pop}
-        onOpenDevices={() => reset({ name: 'devices' })}
-        onOpenHostSwitcher={() => setHostSwitcherOpen(true)}
-        onOpenSettings={() => push({ name: 'settings' })}
-        onOpenWorkspaces={focusWorkspaceKey => {
-          const previousRoute = routes[routes.length - 2]
-          if (previousRoute?.name === 'workspaces') {
-            // Returning to the workspaces page keeps the previous page's workspace
-            // in view instead of jumping back to the top of the list.
-            setRoutes(current => {
-              const next = current.slice(0, -1)
-              const target = next[next.length - 1]
-              if (focusWorkspaceKey !== undefined && target?.name === 'workspaces') {
-                next[next.length - 1] = { ...target, focusWorkspaceKey }
-              }
-              return next
-            })
-            return
-          }
-          push({ name: 'workspaces', focusWorkspaceKey, source: 'chat' })
-        }}
-      />}
-      {route.name === 'settings' && <SettingsScreen onBack={pop} onReset={() => reset({ name: 'server' })} />}
-      {route.name === 'about' && <AboutScreen onBack={pop} />}
-      {error !== undefined && route.name !== 'connecting' && route.name !== 'chat' && (
+      {routes.map((entry, index) => {
+        if (isSheetConnectionRoute(entry)) return null
+        const active = isRouteActiveScreen(routes, index, overlayVisible)
+        return (
+          <RouteLayer
+            key={`${entry.name}:${index}`}
+            index={index}
+            animateEnter={index > 0}
+            active={active}
+          >
+            {renderRouteScreen(entry, index)}
+          </RouteLayer>
+        )
+      })}
+      {error !== undefined && route.name !== 'connecting' && route.name !== 'diagnostics' && (
         <View pointerEvents="box-none" style={[styles.globalError, { top: insets.top }]}>
           <ErrorBanner message={error} onDismiss={clearError} />
         </View>
       )}
       <HostSwitcherSheet
-        visible={hostSwitcherOpen}
-        onClose={() => setHostSwitcherOpen(false)}
+        visible={hostSwitcherOpen || (startupConnection && deviceForRoute !== undefined)}
+        initialConnectingDevice={startupConnection ? deviceForRoute : undefined}
+        onClose={() => {
+          setHostSwitcherOpen(false)
+          if (startupConnection) pop()
+        }}
+        onConnected={() => {
+          if (route.name === 'connecting' && route.sessionId !== undefined) {
+            void openKnownSession(route.sessionId)
+            return
+          }
+          setHostSwitcherOpen(false)
+          goHomeChat()
+        }}
         onSelectDevice={device => {
           setHostSwitcherOpen(false)
           openDevice(device)
@@ -529,18 +656,6 @@ function AppNavigator() {
           setServerEditorOpen(true)
         } : undefined}
         onClose={() => setHomeMenuOpen(false)}
-        onDevices={route.name === 'workspaces'
-          ? () => {
-              setHomeMenuOpen(false)
-              push({ name: 'devices' })
-            }
-          : undefined}
-        onRemoteHosts={route.name === 'workspaces' || devicesIsRoot
-          ? () => {
-              setHomeMenuOpen(false)
-              push({ name: 'remote-hosts' })
-            }
-          : undefined}
         onSettings={() => {
           setHomeMenuOpen(false)
           push({ name: 'settings' })
@@ -551,6 +666,58 @@ function AppNavigator() {
         }}
       />
     </View>
+  )
+}
+
+function RouteLayer({
+  index,
+  animateEnter,
+  active,
+  children,
+}: {
+  index: number
+  animateEnter: boolean
+  active: boolean
+  children: ReactNode
+}) {
+  const { colors } = useTheme()
+  const reduceMotion = useReduceMotion()
+  const progress = useRef(new Animated.Value(animateEnter ? 0 : 1)).current
+
+  useEffect(() => {
+    if (!animateEnter) return
+    progress.setValue(0)
+    const animation = Animated.timing(progress, {
+      toValue: 1,
+      duration: reduceMotion ? motionTokens.duration.reduced : 220,
+      easing: Easing.bezier(...easingCurve('expand')),
+      useNativeDriver: true,
+    })
+    animation.start()
+    return () => animation.stop()
+  }, [animateEnter, progress, reduceMotion])
+
+  const translateX = animateEnter && !reduceMotion
+    ? progress.interpolate({ inputRange: [0, 1], outputRange: [24, 0] })
+    : 0
+
+  return (
+    <Animated.View
+      pointerEvents={active ? 'auto' : 'none'}
+      accessibilityElementsHidden={!active}
+      importantForAccessibility={active ? 'auto' : 'no-hide-descendants'}
+      style={[
+        StyleSheet.absoluteFill,
+        {
+          backgroundColor: colors.background,
+          zIndex: index + 1,
+          elevation: (index + 1) * 16,
+          transform: [{ translateX }],
+        },
+      ]}
+    >
+      <NavigationFocusProvider value={active}>{children}</NavigationFocusProvider>
+    </Animated.View>
   )
 }
 
@@ -588,7 +755,7 @@ function createStyles(colors: ThemeColors) {
   return StyleSheet.create({
   safeArea: { flex: 1, backgroundColor: colors.background },
   flex: { flex: 1 },
-  globalError: { position: 'absolute', left: 0, right: 0, zIndex: 10 },
+  globalError: { position: 'absolute', left: 0, right: 0, zIndex: 1000, elevation: 1000 },
   center: { flex: 1, alignItems: 'center', justifyContent: 'center', paddingHorizontal: spacing.xl, backgroundColor: colors.background },
   loadingTitle: { ...type.title, color: colors.ink, textAlign: 'center' },
   loadingBody: { ...type.body, color: colors.muted, textAlign: 'center', marginTop: spacing.xs },

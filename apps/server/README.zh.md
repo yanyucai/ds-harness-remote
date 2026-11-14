@@ -10,26 +10,42 @@
 
 首页地址是 `/`，点击“开始使用”进入登录页；登录成功后进入 `/app/remote` 设备列表。Host 和客户端都填写同一个 Server 地址，并使用相同的账号密码登录。设备凭据由 Server 保存，Web 登录会话使用 HttpOnly Cookie。
 
+## 刷新响应丢失恢复
+
+刷新成功但响应丢失时，重试旧 refresh token 会返回同一组后继凭据，Server 重启后也可恢复。恢复持续到后继再次轮换、撤销或过期，不延长任何 token 的生命周期。若恢复的 access token 已过期，可用恢复的 refresh token 再次轮换。更早的旧 token 会被拒绝，但不撤销当前有效凭据。
+
+已有设备数据保持兼容。升级前已经消耗的 token 没有恢复元数据，无法恢复；已撤销或过期的凭据仍需重新登录。仅更新 Plugin 不会增加此 Server 行为。恢复元数据不保存明文 bearer token，详见 [刷新协议](../../docs/protocol.md#82-refresh)。
+
 ## Docker 部署
+
+使用官方最新版镜像（`latest`）：
+
+```text
+ghcr.io/liguobao/ds-harness-remote/server:latest
+```
 
 ```bash
 cd apps/server
 cp .env.example .env
 # 编辑 .env，设置账号、密码和访问地址
-docker compose up -d --build
+docker compose pull server
+docker compose up -d --no-build server
 ```
 
 打开 <http://localhost:8080>。设备凭据保存在 `server-data` 卷；停止使用 `docker compose down`。
 
-公开镜像地址：`ghcr.io/liguobao/ds-harness-remote/server:latest`。需要时可以直接拉取：
+更新到最新发布的镜像，在同一目录执行（保留 `.env` 和现有数据卷）：
 
 ```bash
-docker pull ghcr.io/liguobao/ds-harness-remote/server:latest
+docker compose pull server
+docker compose up -d --no-build server
 ```
+
+`latest` 指向最近一次 Tag 工作流发布的镜像，不跟随 main 分支。若要从当前源码自行构建，执行 `docker compose up -d --build server`。
 
 若旧镜像启动时无法解析 `@dsh-remote/protocol`，更新源码后执行 `docker compose build --no-cache server && docker compose up -d server`。镜像显式包含 protocol 编译产物，并在构建阶段校验 Server 的模块加载；重建会保留数据卷。
 
-发布镜像由 GitHub Tag 工作流构建。生产环境应使用 HTTPS 反向代理，不要直接把 Node 监听端口暴露到公网。
+GitHub Tag 工作流发布包含 `linux/amd64` 和 `linux/arm64` 的多架构生产镜像，拉取时 Docker 自动选择匹配的架构。生产环境应使用 HTTPS 反向代理，不要直接把 Node 监听端口暴露到公网。
 
 ### 页面白屏或静态资源返回 403
 

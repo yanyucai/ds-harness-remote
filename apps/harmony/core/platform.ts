@@ -187,6 +187,31 @@ export function installPlatform(): void {
   globals.btoa = (input: string) => new util.Base64Helper().encodeToStringSync(Uint8Array.from(input, c => c.charCodeAt(0)))
   globals.atob = (input: string) => Array.from(new util.Base64Helper().decodeSync(input), byte => String.fromCharCode(byte)).join('')
   if (globals.AbortController === undefined) { globals.AbortController = NativeAbortController; globals.AbortSignal = NativeAbortSignal }
+  // Modern shared uploads use these statics even on older Ark runtimes.
+  const Signal = globals.AbortSignal as typeof AbortSignal
+  const Controller = globals.AbortController as typeof AbortController
+  if (typeof Signal.abort !== 'function') Signal.abort = (reason?: unknown) => { const c = new Controller(); c.abort(reason); return c.signal }
+  if (typeof Signal.timeout !== 'function') Signal.timeout = (ms: number) => {
+    if (!Number.isSafeInteger(ms) || ms < 0) throw new RangeError('Invalid timeout')
+    const c = new Controller()
+    setTimeout(() => c.abort(Object.assign(new Error('Timed out'), { name: 'TimeoutError' })), ms)
+    return c.signal
+  }
+  if (typeof Signal.any !== 'function') Signal.any = (signals: AbortSignal[]) => {
+    const c = new Controller(), subscriptions: Array<{ signal: AbortSignal; listener: () => void }> = []
+    const abort = (signal: AbortSignal) => {
+      if (c.signal.aborted) return
+      c.abort(signal.reason)
+      for (const item of subscriptions) item.signal.removeEventListener('abort', item.listener)
+      subscriptions.length = 0
+    }
+    for (const signal of signals) {
+      if (signal.aborted) { abort(signal); break }
+      const listener = () => abort(signal)
+      subscriptions.push({ signal, listener }); signal.addEventListener('abort', listener, { once: true })
+    }
+    return c.signal
+  }
   // NetworkKit createWebSocket() looks up the native constructor on globalThis.
   // Replacing it makes its factory recursively re-enter this adapter. Shared
   // protocol code receives NativeWebSocket as a module-local build binding.

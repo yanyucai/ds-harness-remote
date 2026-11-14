@@ -95,8 +95,9 @@ REST、Control frame 和解密后的 Remote message 使用 UTF-8 JSON。发送�
 - 对未识别的必需 enum 值 fail closed。
 - 不把原始 parser 错误直接展示给用户。
 
-共享 Control 和解密消息解码器拒绝同一对象内的重复字段。转义后相同的字段名也视为重复。
-原始字节必须是有效 UTF-8。REST 入口尚未接入此检查。
+共享 Control、Relay 和解密消息解码器拒绝同一对象内的重复字段。
+自部署 Server 的 REST 入口执行相同检查。转义后相同的字段名也视为重复。
+这些入口拒绝无效 UTF-8。REST 入口返回 `INVALID_MESSAGE`，不返回原始请求内容。
 
 ### 4.2 标识符
 
@@ -295,7 +296,9 @@ deviceId 或相同 role，并为新角色签发独立 token pair、同步同账�
 }
 ```
 
-Server 必须轮换 refresh token。完整多账号 Server 对未再次轮换、未撤销且未过期的后继 token 提供幂等恢复，不使用固定两分钟窗口；过时 token 被拒绝但不撤销当前有效凭据。恢复数据异常或数据库繁忙返回可重试 503。自部署 Server 的策略以其实现为准。Client 必须原子替换本地 token；不能在日志或 URL 中传 token。
+Server 必须轮换 refresh token。完整多账号 Server 和开源自部署 Server 对未再次轮换、未撤销且未过期的直接后继 token 提供幂等恢复，不使用固定两分钟窗口；过时 token 被拒绝但不撤销当前有效凭据。恢复数据异常或数据库繁忙返回可重试 503。Client 必须原子替换本地 token；不能在日志或 URL 中传 token。
+
+自部署 Server 用请求携带的旧 refresh bearer 作为 HMAC-SHA256 密钥，结合随机 nonce、deviceId 和用途域分离派生后继 pair；磁盘只保存 token 摘要、nonce 和原始过期时间，不保存明文 bearer。消耗旧 token、保存恢复元数据和后继记录必须一起提交，写入失败时旧 token 保持可用。重复请求返回原 pair，不延长 access 或 refresh 生命周期；若 access 已过期，Client 应保存恢复的 pair，再用其 refresh token 正常轮换。后继再次轮换后，不允许用更早的祖先 token 跨代恢复。升级前已消耗且没有恢复元数据的旧 token 无法恢复，返回 `AUTH_INVALID`，但不撤销现有有效凭据。部署旧版 Server 的行为可能仍是重用即撤销，升级 Plugin 不会改变 Server 策略。
 HTTP `401/403` 的空响应、非 JSON 响应或不符合协议的错误体应保留凭据并退避重试，不单凭状态码判定设备授权失效。完整 Server 握手时的授权快照竞争使用 WebSocket `1013`（稍后重试），Client 保留凭据重连，不消耗授权刷新恢复次数。
 成功响应必须使用 §8.1 的 token pair schema。请求和响应禁止包含未定义字段。
 
@@ -824,13 +827,28 @@ Harness RPC 路径、路径规范化变体及 query 均以 `INVALID_MESSAGE` 拒
 Connection handler。不得通过该入口绕过 Harness Remote allowlist、Remote 设置限制或
 终端归属与输入权校验。`body` 只允许 `{ endpoint, payload? }`，`payload` 为普通 JSON
 对象或 `null`（数组与原始值拒绝）；额外顶层字段拒绝。Host 在进入任何本机 carrier 前
-按 `endpoint` 执行以下编译期固定操作白名单，新增上游操作默认拒绝：
+按 `endpoint` 执行编译期固定操作白名单，新增上游操作默认拒绝。
 
-- 查询：`state`、`models`、`efforts`、`exchange`、`earlier`、`usage`、`room-progress`、`schedules`。
-- Bot 管理：`create-bot`、`duplicate-bot`、`update-bot`、`delete-bot`、`set-main`、`set-flags`。
-- 群聊管理：`create-room`、`update-room`、`delete-room`、`room-continue`。
-- Agent 会话管理：`add-agent`、`agent-session`、`agent-adopt`、`agent-archive`、`agent-rename`、`remove-agent`。
-- 会话交互：`send`、`btw`、`btw-cancel`、`answer-question`、`dismiss-question`、`view-reply`、`approval-answer`、`stop-member-work`。
+2026-11-13 对齐 [DS-Bot v0.3.6](https://github.com/Fei2411/DS-Bot/tree/v0.3.6)：
+完整暴露其 `channel.js` 的命名 endpoint 与 `computer/index.js` 的 `computer-*` endpoint，
+包括模型供应商、密钥、连接器、IM、手机配对、电脑控制、更新、诊断、头像、分组、记忆编辑与 Side Chat。
+精确清单见 `packages/plugin/src/plugin-route-bridge.ts` 的 `BOT_REMOTE_OPERATIONS`；
+独立上游快照见 `packages/plugin/tests/fixtures/ds-bot-v0.3.6-endpoints.json`。
+旧 Host 的 `btw`、`btw-cancel`、`room-continue` 仍放行。
+`approval-answer` 的 choice 不再限制为单次允许/拒绝，交由 DS-Bot 自身校验。
+这些管理操作仅能通过既有认证 Remote 通道调用；不新增 HTTP 路径或通用 endpoint 通配符。
+原有消息/响应大小与 30 秒调用预算保持不变，超大图片或长操作仍受此边界限制。
+这表示 Host 接口透传覆盖，不表示 Android 原生界面已支持所有功能。
+
+`group-rows { roomId, from, to?, anchor? }` 读取群聊账簿中某轮的行，`open` 表示该轮仍在增长；
+它也是轮次结束后仍能显示成员回复正文的唯一读取入口。该 operation 于 0.6.4 加入白名单：
+更早的 Remote Host 在进入本机 carrier 前即以 `INVALID_MESSAGE` 拒绝，`ds-bot` 0.3.1 及更早则
+返回 `{ ok: false, error: { code: "bot/not-found", message: "Unknown endpoint group-rows" } }`。
+Android 对两种拒绝都退回既有的 `room-progress`，不再匹配版本相关的错误文案；`room-progress`
+只返回仍在进行的轮次（Host 在轮次结束时删除该条目），因此降级路径只能在轮次进行中补齐行，
+已结束轮次继续依赖历史详情与本机缓存。`group-rows` 另带 `active`，表示群聊此刻是否在工作：
+最新一轮在下一条消息产生下一个锚点前始终 `open: true`，客户端据 `active: false` 停止轮询，
+旧 DS Bot 不返回该字段时仍只看 `open`。
 
 `view-reply` 转发 DS Bot 0.2.0 / 0.2.1 交互卡片的 `sessionId`、`viewId`、`action`、`values`，
 用于选择、确认、表单及 0.2.1 的 `submit` 提交；公式输入通过 `values.inputs` 传递。
@@ -846,11 +864,9 @@ DS Bot 0.2.1 旁问：`btw { sessionId, text }` 返回卡片 ID，`btw-cancel { 
 Android 卡片使用固定 0.2.1 schema 和受限表达式解释器，支持本地计算与 SVG 图表；
 HTML 仅展示摘要和主机打开提示，不执行 HTML/脚本，不增加网络访问或通用 RPC。
 
-`approval-answer` 只接受 DS Bot 的 `allow`（单次）或 `reject`，不开放 session-wide 审批。
-安装/升级、日程增删、凭据和 connector 管理、能力脚本、memory 写入、浏览器控制、诊断
-文件及本机偏好设置等操作均不开放；不允许通过 `api/bot` 间接扩大 Harness Remote 权限。
-被拒绝的操作返回 `INVALID_MESSAGE`，浏览器兼容入口显示安全的
-`remote-plugin/operation-not-allowed` 原生错误封装。
+未知 endpoint 返回 `INVALID_MESSAGE`，浏览器兼容入口显示
+`remote-plugin/operation-not-allowed` 原生错误封装。DS-Bot v0.3.6 的管理接口
+已按上述完整白名单开放，旧版本文档中的“仅单次审批/本地管理”限制不再适用。
 
 ```json
 "params": { "route": "api/bot", "body": { "endpoint": "state", "payload": null } }
@@ -896,6 +912,7 @@ Host handshake 的 capability 例子：
   "harness.remote.v1",
   "harness.remote.transfer.v1",
   "harness.remote.stream.transfer.v1",
+  "remote.compaction.async.v1",
   "fileviewer.read.v1",
   "workspace.upload.v1",
   "codex.appserver.v1",
@@ -925,6 +942,14 @@ seq/cursor/throughSeq/hasMore、轮次生命周期及工具关联/错误状态�
 关闭模式后重新打开会话加载完整历史；CodeX 已有的详情句柄与按需读取继续有效。
 此能力只减少 Host → Client 历史载荷，不保证减少后端读取历史成本。
 
+普通工具正文的默认摘要在 512 字符截断；但已识别的 DS Bot 群聊轮次载荷
+（`{"replies":[...],"passed":N}`）属于会话正文而非工具诊断，改为**有界结构化保留**：
+只保留 `replies` 条目的原语字段、原始顺序、每条正文上限、条目上限与单条投影上限，
+发生裁剪时在顶层追加 `"truncated":true`。输出仍是合法 `{"replies":[...]}`，未升级的
+Client 仍可解析；整个投影另有文档级预算，保证 `session/follow` snapshot（无 transfer 兜底）
+远低于安全帧上限。无法解析、空 `replies` 或非该形状的正文继续走 512 字符摘要。
+精简投影是只读的，不修改原始记录，也不改变错误状态。
+
 ACP 的 `agent.acp.v1` / `agent.acp.transfer.v1` 及 `agent.acp.<backend>.v1` 声明表示
 Host 已启用且实现该后端协议，不代表 CLI 已初始化完成。ACP 后台初始化不阻塞 Harness Remote
 上线；初始化中或启动失败时，`workspaceTypes` 对应项的 `available` 必须为 `false`，数据面调用
@@ -935,7 +960,11 @@ Host 已启用且实现该后端协议，不代表 CLI 已初始化完成。ACP 
 `workspace.upload.open|chunk|commit|abort`。Client 必须以加密通道内的
 `harness.transport.describe` 结果确认该能力；它不表示任意目录可写，也不扩展原生
 附件、图片 transfer 或只读预览 allowlist。协议详见 [Workspace upload](#workspace-upload)。
+其可选扩展 `workspace.upload.binary.v1` 只在上传服务实际可用且声明基础能力时，
+通过认证后的 describe 返回；初始协调握手和旧版 JSON 上传不变。
 未声明该能力时不调用上传 RPC；旧 Host 的入口保持禁用。
+
+`remote.session.events.v1` 声明 Host 的 `$events` 流具备真实转发能力（而非缺少 `@deepseek-ai/dsh-api-remotes` 时的空转兜底），会持续推送 `api-session/added|removed|status|activity|error` 事件，且 `session/control` 与 `workspace/list` 语义就绪；Client 据此可停止周期性全量 `session/list` 轮询，改为增量更新并在新建/移除未知根会话时按需同步工作区目录。
 
 ### 17.1 工作区类型能力声明（workspaceTypes）
 
@@ -1225,6 +1254,42 @@ Client 的 256 项/4 MiB 等待队列只存小描述，同一 stream 同时只�
 事件的结果必须经 allowlisted `$events/result` unary endpoint 返回原 Host；Plugin 不创造
 permission id、decision enum 或额外响应状态机。
 
+#### `harness.remote.compaction.*`（异步压缩）
+
+`remote.compaction.async.v1` 是 Remote 自有契约，不改变 Harness `commands/execute` 的语义：
+官方 `/compact` handler 会等待 `compactNow()` 完成，本地慢后端（例如 prefill 约 1k tok/s、
+上下文 500K）单次压缩需要数分钟，任何单条 RPC deadline 都不应成为压缩的实际期限。
+
+- `harness.remote.compaction.submit`，Params `{ sessionId, requestId, budgetMs? }`，Result
+  `{ operationId, state }`。Host 登记后立即返回 `accepted`；相同 `requestId` 在
+  `(deviceId, sessionId)` 范围内幂等去重，响应丢失后重试不会重复执行。Host 后台继续调用
+  固定命令 `/compact`。
+- `harness.remote.compaction.status`，Params `{ sessionId, operationId }`，Result
+  `{ operationId, sessionId, state, acceptedAt?, startedAt?, finishedAt?, message? }`，
+  `state` 为 `accepted|running|cancelling|succeeded|failed|cancelled|interrupted|unconfirmed`。
+- `harness.remote.compaction.cancel`，Params 与 status 相同。Harness 的
+  `commands/execute` 经 `withAbort()` 在 signal 中止后立即停止等待 handler，而 handler
+  可能仍在压缩、持锁并持久化；因此“命令调用已返回”不等于“压缩已收尾”。Host 在取消后
+  先返回 `cancelling`，再结合 Session 日志中的 `command/run` 与
+  `compaction/end`（同一 `sourceCommandId`）确认收尾：确认失败则返回 `cancelled`；
+  确认成功提交（`compaction/end` 无 error）但取消期间已无法观察持久化结果时返回
+  `unconfirmed`，不得仅凭取消标记覆盖成功；始终无法确认时保持 `cancelling`，
+  Client 继续轮询。预算超时遵循同一规则（确认失败为 `failed`，已提交但不可确认时为
+  `unconfirmed`，未确认时保持 `cancelling`）。
+- 执行归属 Host runtime，不随提交连接关闭而中止；断线只停止观察，重连后可用同一
+  `operationId` 继续查询。Host 重启后未知 id 返回 `interrupted`，不自动重放，也不伪造成功。
+- `budgetMs` 是压缩任务自身预算（默认 30 分钟，钳制到 1–120 分钟），与提交/查询 RPC 的
+  超时分离。终态以 Host 后台 `commands/execute` 的结算为准；仅看到 `compaction/end`
+  不能判定成功，后续保存失败必须报告为 `failed`。
+- 本契约只覆盖 `/compact`。其他命令、插件清单校验、提醒创建等继续使用现有 RPC 超时策略；
+  Host 不开放任意后台命令。未声明该能力的旧 Host 保持原 `commands/execute` 行为。
+- 同一 Session 同时只接纳一个未结束的压缩操作（新的 `requestId` 在旧操作结束前返回
+  `AGENT_BUSY`）；Host 最多跟踪 32 个操作，超出返回可重试的 `RATE_LIMITED`。终态在内存
+  保留 10 分钟用于查询与去重；过期后的未知 `operationId` 不证明原压缩失败，也不会被自动重放。
+- 产品客户端（Android）在提交前持久化 `requestId`、收到响应后持久化 `operationId`，按
+  Host 设备与会话隔离；提交响应丢失时用同一 `requestId` 重试，重连后只查询原操作。
+  观察失败返回“暂时无法确认状态”，不得当作压缩失败或再次提交。
+
 #### `harness.remote.transfer.*`
 
 `harness.remote.transfer.v1` 是 `harness.remote.call` 的有界分块封装。操作、512 KiB chunk、
@@ -1247,7 +1312,11 @@ Android 用户可显式下载工作区原文件到系统目录选择器授权的
 固定只读 allowlist：`workspaceFiles/list|stat|read|readBytes|readAll|readRelated|changes`，以及
 `officeToPdf/generation|render`。Host 官方 Session lookup、组合文件系统、分页与大小限制继续生效。
 注意：上游 `list` / `changes` 限于工作区；为修复 #250 任意文件读取漏洞，原生 `workspaceFiles/read*` 与 `stat`
-严格限制在 Session 工作区根目录（cwd）物理包含范围内，拒绝未授权的工作区外路径与越界符号链接。旧 `fileviewer.read.v1` 仍使用 provider 授权。
+严格限制在 Session 工作区根目录（cwd）物理包含范围内，拒绝未授权的工作区外路径与越界符号链接。包含性一律以
+realpath 后的规范根目录计算，避免符号链接父目录或大小写差异造成误拒；边界本身不变。拒绝结果可在
+`rpc.error.details.reason` 中携带稳定的安全分类（`scope-missing`、`authority-unavailable`、`root-invalid`、
+`outside-root`、`symlink`、`not-regular-file`、`not-found`、`too-large`、`io`），不得包含路径、文件名、
+文件正文或原始文件系统错误。旧 `fileviewer.read.v1` 仍使用 provider 授权。
 对 `codex:<threadId>` scope，Host 使用 CodeX thread 当前 `cwd` 作为独立根目录，并额外拒绝根目录之外的路径；
 该映射不改变 Harness Session 的既有工作区权限。CodeX 终端同样按 thread 建立独立 context。
 
@@ -1588,7 +1657,7 @@ ACP 同时要求调用连接的 peer 仍有效、backend 可用、session owner 
 - `open`：`totalBytes` 是非负整数：Host 验证当前连接为 LAN 或直接 P2P 时最大 1 GiB（1,073,741,824 bytes）；TURN、Relay、未知路径最大 20 MiB。Host 在 open、chunk 和 commit 重新检查实际路径；大文件传输回退至中继时拒绝并清理未提交数据。旧 Host 可保留 20 MiB 限额，Client 不得自动重传。`name` 是单个文件名，UTF-8 编码最多
   220 bytes；禁止 `/`、`\`、ASCII 控制字符、DEL、`<>:"|?*`、`.`、`..`、尾部点/空格、
   Windows 保留名，以及 Host 临时文件前缀 `.dsh-upload-`。不能传 `cwd`、目标目录或目标路径。
-  Host 当前返回 `chunkBytes: 65536`，表示后续每块**解码后**最多 64 KiB。
+  未协商二进制扩展时，Host 返回 `chunkBytes: 65536`，表示后续每块**解码后**最多 64 KiB。
 - `chunk`：`offset` 是从 0 开始的非负整数字节偏移，必须等于上一块确认后的
   `receivedBytes`。`data` 使用标准、规范的 Base64（含所需 padding），不使用 Base64URL；
   解码结果不得为空、不得超过 `chunkBytes`，累计不得超过 `totalBytes`。Host 顺序写入，
@@ -1600,6 +1669,26 @@ ACP 同时要求调用连接的 peer 仍有效、backend 可用、session owner 
   `path` 必须严格等于 `./` 加最终 `name`，`bytes` 必须等于 `totalBytes`。
 - `abort`：移除同一会话下尚未提交的上传；不存在或已提交时幂等返回 `{aborted:true}`，
   不删除已经发布的文件。活动句柄属于其他会话时返回 `UPLOAD_NOT_FOUND`，不影响原上传。
+
+#### 可选二进制上传扩展
+
+`workspace.upload.binary.v1` 是 `workspace.upload.v1` 的附加能力，仅在认证后的
+`harness.transport.describe` 同时声明两者时启用。旧 Host 未声明时，Client 保持原有
+open 参数和 64 KiB Base64 chunk；新 Host 对旧 Client 的参数及响应也完全保持原样。
+不得通过发送 mutation 探测支持情况，或在传输失败后换格式重放数据。
+
+Client 在 open 增加 `encoding: "binary-v1"`，Host 回显该字段并返回
+`chunkBytes: 262144`。只有该上传句柄可以调用 `workspace.upload.chunk.binary`，其参数
+仍为 `{sessionId, uploadId, offset, data}`，但 data 是原始 Uint8Array；响应仍为普通
+JSON RPC 的 `{uploadId, receivedBytes}`。同一上传不能混用两种 chunk。Client 校验
+句柄、累计确认偏移与 commit 的完整字节数；最多四块在途，确认后报告进度。
+
+二进制 RPC 位于现有 Noise 加密层内，使用固定 12-byte 前缀：
+`44 53 48 55 50 01 00 00`，随后四字节大端无符号 JSON header 长度。Header 是正常的
+`rpc.request` envelope，但 params 不含 data；紧随其后的是原始 chunk 字节。仅允许
+`workspace.upload.chunk.binary` 使用此格式，header 最多 4096 bytes，正文 1–262144
+bytes；解码后仍通过现有 envelope 校验与 Host 上传授权。普通消息的 JSON 格式、Noise
+suite、nonce 归属、分片、上传总额限制、目录归属检查及原子提交均不变。
 
 例如上传原名 `report.txt` 的三个字节 `abc`，且目录中已有同名文件：
 
@@ -1618,11 +1707,58 @@ workspace.upload.commit
 以上 Params/Result 仍使用 §16 的 `rpc.request` / `rpc.response` / `rpc.error` envelope，
 每次调用各有独立 request ID；上传顺序由 `uploadId`、`offset` 和 Host 状态共同约束。
 
+#### 可选 LAN TCP 上传扩展
+
+`workspace.upload.lan.v1` 依赖基础与二进制上传能力，只能通过已认证的
+`harness.transport.describe` 获知。首个客户端为 Android：仅对至少 1 MiB 的二进制上传、
+当前真实路径为 LAN、原生二进制 WebSocket sender 可用时尝试。聊天和控制流不迁移。
+IPv6、P2P、TURN、Relay、旧 Host 和缺少原生模块的客户端沿用现有上传路径。
+
+Client 从当前 WebRTC 选中路径读取 Host 的实际 IPv4 地址，再在**原认证通道**调用：
+
+| RPC | Params | Result |
+| --- | --- | --- |
+| `workspace.upload.lan.open` | `{sessionId, uploadId, address}` | `{sessionId, uploadId, connectionId, url, expiresInMs}` |
+
+此 RPC 只分配临时入口，不创建文件。Host 从认证连接取得设备静态公钥与 connectionId，
+不接受 Client 自报身份；只接受本机网卡实际拥有的 RFC1918 IPv4 字面地址，并且当前
+Host 观测路径必须为 LAN。每个认证连接最多两个入口，分别绑定一个 sessionId/uploadId。
+入口为该地址上的随机 TCP 端口，固定路径
+`/ds-harness-remote/upload/<32-byte base64url ticket>`；票据未使用时 10 秒过期，
+一次 WebSocket upgrade 即消耗，错误路径不消耗。普通 HTTP 请求一律 404。
+
+Client 必须验证返回的 sessionId/uploadId/connectionId 与当前操作完全一致；URL 必须为
+`ws:`，主机字面地址与实际选中的 Host 地址一致，不能含用户信息、query、fragment、
+任意路径或 DNS 名称。新 socket 使用独立的 Noise IK，会话双方仍校验原连接固定的静态
+身份密钥。Prologue 是 UTF-8 编码的 JSON 数组：
+`["ds-harness-remote/lan-upload/v1", connectionId, sessionId, uploadId, ticket]`。
+Host 握手预算 5 秒，Android 从连接开始的总预算 3 秒；握手未成功不能发送上传 RPC。
+
+握手后，每个二进制 WebSocket message 是一个 Noise ciphertext（最多 65,535 bytes）。
+内部继续使用原 `SecureMessageCodec` 和二进制 RPC 格式，不再附加 RTC 的 8 KiB 分片。
+只允许绑定 scope 的 `workspace.upload.open`（encoding 必须是 binary-v1）、
+`workspace.upload.chunk.binary`、`workspace.upload.commit`、`workspace.upload.abort`。
+不转发 Harness、插件路由、终端或其他业务。复用同一个连接所有者的 WorkspaceUploadHost，
+保持真实会话工作区授权、目录身份检查、偏移与完整长度校验、限制、不覆盖原子发布和 fsync。
+Android 仍最多四个 256 KiB chunk 在途，原生 sender 只传递 ciphertext 字节，不拥有密钥、
+nonce、重连或重试逻辑。Host 最多接受 2 MiB / 8 条排队 RPC；空闲 120 秒清理。
+
+入口与 socket 都属于原认证连接；断开、替换或撤销时销毁票据、监听器与 Noise session，
+清理尚未提交的临时文件。切出 LAN 后拒绝后续数据请求。提交已完成时，即使响应丢失也不能
+删除已发布文件；Client 必须把这种结果视为投递不确定，不能换通道重发。
+
+未声明能力时不探测。协商返回不支持或入口不可达、且**尚未发送文件 open RPC**时，可以在
+原通道执行一次正常上传。认证/帧校验失败、取消、连接替换不触发降级；文件 open、chunk、
+commit 任意一次发送后失败，都不能回退重放。abort 是清理请求，可以通过原通道发送。
+
 #### 生命周期、重试与落盘边界
 
 每连接最多 2 个活动上传。Host 在工作区根目录排他创建随机 `.dsh-upload-*.part`
-临时文件，权限为 `0600`；根目录必须经过 realpath 与目录身份验证，并在分块写入、
-发布前重验会话 authority 和根目录身份。目录改变或失去 authority 时拒绝继续。
+临时文件，权限为 `0600`；根目录必须经过 realpath 与目录身份验证。每次分块写入都重新
+验证根目录未被替换（realpath 与设备号/inode），会话 authority 则按有界频率重验
+（至多 5 s 或累计 4 MiB 后再次解析，仍受每次 15 s 解析上限约束），并在 `open` 与
+发布前的 `commit` 强制执行。目录改变或失去 authority 时拒绝继续；authority 在上传
+中途丢失时，未提交数据只保留在临时文件中，`commit` 必须失败并清理，不能发布。
 Host 本地进程仍保有原有文件系统权限，本协议不隔离恶意本地进程的并发目录修改。
 
 未提交上传在空闲达到 2 min 后进入清理范围；Host 定时或处理下一次调用时回收。
@@ -2126,3 +2262,59 @@ This adds no new wire format or capability and requires an updated Host plugin.
 The additive `transport.webrtc.resume.v1` contract is specified in
 [WebRTC control recovery](design/webrtc-control-recovery.md). Protocol v1 and
 legacy control lifetimes remain unchanged unless all three parties negotiate it.
+
+## Device pairing v1
+
+The full Server and Remote plugin implement phone confirmation followed by one local Host code submission. New Hosts accept incoming connections only. See [the protocol](device-pairing-v1.md) and [DSH-Go integration](dsh-go-pairing-integration.md). This capability is not available in the bundled minimal `apps/server`; unsupported Servers fail closed.
+
+### Remote official attachment uploads
+
+The Remote browser client installs the official `__DSH_FILE_UPLOAD__.fetch` hook
+and also replaces the live `fileUpload.post` carrier when the shell has already
+constructed it. This covers the shared Harness Web/Desktop/IDE upload service.
+In local mode the request retains its original destination. In Remote mode,
+`api/session/uploadFileBinary` attachments are sent through `plugin.route.call`
+with body `{ endpoint: "image", payload: { sessionId, mediaType, name?, data } }`
+for images, or `{ endpoint: "file", payload: { sessionId, name?, data } }` for
+ordinary files, including empty files.
+`data` is base64; PNG/JPEG/WebP/GIF are accepted. The client runtime routes
+attachments through the dedicated `remoteUploads/upload` Harness Remote endpoint
+(`remoteImages/upload` remains an alias),
+using the existing ordered `harness.remote.transfer.*` protocol for oversized
+requests. Individual encrypted frames remain below 4 MiB. Image acceptance is
+controlled by the official Host service's `imageLimits` (`maxImageBytes`,
+`maxMessageImageBytes`, dimensions, pixel count and media types), rather than a
+2 MiB Remote image limit. A 192 MiB raw-image transport safety ceiling keeps
+base64 requests within the existing 288 MiB aggregate transfer budget.
+The native `fileUploads/upload` RPC is also forwarded for IDE clients submitting
+encoded bytes. Ordinary files use the official file storage service; Remote
+never accepts a destination path. The Host sanitizes the display filename and
+stages the upload under the receiving Session. Prompt file blocks carry only
+`{ type: "file", receiptId }`. Current Hosts also accept those file receipts in
+`commands/execute.submittedAttachments`; older Hosts reject them rather than
+dropping the attachment.
+The Host reconstructs the raw-byte request to the fixed official upload route,
+using its authenticated local Connection carrier. Official Session staging and
+attachment receipts are preserved; no client-local attachment reference is
+substituted. Disconnection, unsupported Host versions and non-Harness backends
+fail closed. Upload mutations are never automatically retried. Older Hosts
+reject the new endpoint and must be upgraded on both ends. The standalone
+VS Code extension accepts one file or image per message: images use inline
+image content, while other files are staged through `fileUploads/upload` and
+submitted by receipt. Both use the existing chunked Remote transport.
+
+### Client-local `@file` mentions in Remote prompts
+
+When a Desktop client selects a Remote Harness workspace, its local
+Remote plugin intercepts `session/prompt` before forwarding. Standalone native absolute `@file` mentions in user text (for example
+`@C:\\...` on Windows or `@/Users/...` on macOS, with quoted paths for spaces) are
+checked against the selected remote workspace's `fileReferences/list` first.
+An exact remote file candidate remains a text mention for the remote Host.
+Otherwise, an existing client-local file is read by the client machine's Host process, uploaded with the existing
+`fileUploads/upload` call into the selected remote Session, and replaced by
+`{type:"file",receiptId}` content blocks. The client forwards the prompt only
+after each upload returns a valid receipt. Missing, non-regular, symbolic-link,
+or oversized client-local files fail the prompt. Paths absent on the client remain
+text mentions for remote Host resolution.
+At most four files and 192 MiB total are accepted per prompt. Non-absolute and non-native `@` references keep their existing behavior. The remote Host's
+attachment service still controls file acceptance and storage.

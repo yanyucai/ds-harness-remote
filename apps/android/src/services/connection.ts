@@ -1,11 +1,17 @@
+import { LanUploadRoutes } from './lan-upload'
+import { nativeWebSocketSender } from './native-websocket-binary'
 import { AgentAcpClient, CodexRemoteClient, HarnessAlphaClient, RemoteClientCore, RemoteTypertGateway, probeRemoteHostFeatures, remoteWorkspaceTypeAvailable, type RemoteHostFeatures } from '@dsh-remote/client-core'
+import { LAN_UPLOAD_CAPABILITY, classifyControlClose } from '@dsh-remote/protocol'
 import { AdaptiveTransport, type AdaptiveConnectionDetails, type RtcIceServer } from '@dsh-remote/webrtc'
 import { websocketUrl } from '../lib/server-url'
+import { connectionFailure, connectionLog } from './connection-log'
 import { strings } from '../locales/i18n'
 import type { DeviceIdentity, MuxStreamFrame, RemoteDevice } from '../types'
 import { AcpSessionTools, HarnessSessionTools, type SessionTools } from './session-tools'
 import { SecureTransport } from './secure-transport'
+import { nativeRtcFactory } from './native-rtc-binary'
 import { BotRemoteClient } from './bot-catalog'
+import { compactionStore } from './compaction-store'
 
 export type MuxFrameHandler = (frame: MuxStreamFrame) => void
 export type CloseHandler = (options?: { retryable: boolean; lastTransport?: 'lan' | 'p2p' | 'turn' | 'relay' }) => void
@@ -24,6 +30,9 @@ export interface AndroidConnectionOptions {
 
 export class AndroidRemoteConnection {
   private compactHistorySupported = false
+  private binaryUploads = false
+  private lanUploads?: LanUploadRoutes
+  private sessionEventsSupported = false
   private pluginRouteSupported = false
   private core?: RemoteClientCore
   private proxy?: RemoteHarnessClient
@@ -60,6 +69,7 @@ export class AndroidRemoteConnection {
     // Replacing a connection must not wait for a graceful stream-close RPC:
     // the old data path may be exactly what is being recovered from.
     const attempt = ++this.connectionAttempt
+    connectionLog('connect', { attempt, phase: 'starting', forceRelay: options.forceRelay === true })
     await this.clearConnection()
     if (attempt !== this.connectionAttempt) throw new Error('The connection attempt was superseded.')
     this.muxHandler = onFrame
@@ -68,6 +78,7 @@ export class AndroidRemoteConnection {
     let lastTransport: 'lan' | 'p2p' | 'turn' | 'relay' | undefined
     const createTransport = (relayOnly: boolean) => new AdaptiveTransport(websocketUrl(baseUrl), {
       role: 'client',
+      rtcFactory: nativeRtcFactory(),
       deviceId: identity.deviceId,
       accessToken,
       refreshAccessToken: options.refreshAccessToken,
@@ -76,38 +87,43 @@ export class AndroidRemoteConnection {
       preferredTransports: options.forceRelay || relayOnly
         ? ['relay']
         : options.preferredTransports ?? ['lan', 'p2p', 'turn', 'relay'],
-      // Mobile hole punching either succeeds quickly or not at all; 6s keeps
-      // a failed P2P attempt from stalling the whole connect pipeline.
-      negotiateTimeoutMs: 6_000,
+      // TURN-only attempts may need extra time for relay allocation and TCP
+      // fallback. Keep automatic hole punching on its shorter mobile budget.
+      negotiateTimeoutMs: !options.forceRelay && !relayOnly
+        && options.preferredTransports?.includes('turn')
+        && !options.preferredTransports.some(transport => transport === 'lan' || transport === 'p2p')
+        ? 12_000
+        : 6_000,
       iceServersTimeoutMs: 5_000,
       fetchIceServers: options.fetchIceServers,
       onDisconnect: event => {
         // Refused/replaced credentials, protocol errors and malformed frames
         // need manual recovery; do not automatically compete for ownership.
+        const retryableControlClose = event.closeCode !== undefined
+          && classifyControlClose(event.closeCode, event.closeReason).retryable
         retryableClose = event.reason !== 'invalid-control-frame'
-          && !(event.closeCode !== undefined && (event.closeCode >= 4000
+          && !(event.closeCode !== undefined && !retryableControlClose && (event.closeCode >= 4000
             || [1002, 1003, 1007, 1008, 1009].includes(event.closeCode)))
         if (event.transport !== undefined) lastTransport = event.transport
-        console.warn('[dsh-remote] Carrier closed:', JSON.stringify(event))
+        connectionLog('disconnect', { reason: event.reason, closeCode: event.closeCode, transport: event.transport })
       },
-      onWebRtcFallback: error => {
+      onWebRtcFallback: (error, diagnostics) => {
         webRtcFallback = true
         options.onWebRtcFallback?.()
         // Do not include credentials, SDP, prompts, or tunnel payloads.
-        console.warn('[dsh-remote] WebRTC fallback:', error.message)
+        connectionLog('fallback', { reason: connectionFailure(error),
+          connectionState: diagnostics?.connectionState,
+          iceConnectionState: diagnostics?.iceConnectionState,
+          localCandidates: diagnostics?.localCandidates.byType,
+          remoteCandidates: diagnostics?.remoteCandidates.byType,
+        })
       },
       onWebRtcDiagnostic: event => {
         if (event.type !== 'selected-path') return
         // Selected-path telemetry contains candidate types and address scopes,
         // never the candidate IPs, SDP, credentials, or tunnel payloads.
-        console.info('[dsh-remote] WebRTC selected path:', JSON.stringify({
-          ...event.selectedPath,
-          signaledRemoteCandidates: {
-            total: event.diagnostics.remoteCandidates.total,
-            byType: event.diagnostics.remoteCandidates.byType,
-            byScope: event.diagnostics.remoteCandidates.byScope,
-          },
-        }))
+        connectionLog('selected-path', { transport: event.selectedPath.mode, protocol: event.selectedPath.protocol, localCandidateType: event.selectedPath.localCandidateType, remoteCandidateType: event.selectedPath.remoteCandidateType, localCandidates: event.diagnostics.localCandidates.byType,
+          remoteCandidates: event.diagnostics.remoteCandidates.byType })
       },
     })
     const connectCore = async (relayOnly: boolean) => {
@@ -128,12 +144,15 @@ export class AndroidRemoteConnection {
         // connection that may already be stored on this instance.
         if (this.core !== core) return
         this.clearHealthTimer()
+        void this.lanUploads?.close()
+        this.lanUploads = undefined
         void this.closeMux?.(false)
         this.closeMux = undefined
         this.core = undefined
         this.proxy = undefined
         this.codex = undefined
-        this.codexAvailable = false
+        this.sessionEventsSupported = false
+    this.codexAvailable = false
         this.cursor = undefined
         this.acpBackends.clear()
         this.sessionTools = undefined
@@ -154,7 +173,7 @@ export class AndroidRemoteConnection {
       const emitFrame = (frame: MuxStreamFrame) => {
         if (this.core !== core) return
         if (frame.payload.type === 'stream/closed' && frame.payload.reason === 'failed') {
-          console.warn('[dsh-remote] Harness stream failed; closing carrier')
+          connectionLog('stream-failed')
           // A live carrier failure is an offline channel, even if its socket
           // still answers. Reconnect will create a fresh follow subscription.
           void this.close()
@@ -164,6 +183,16 @@ export class AndroidRemoteConnection {
         this.muxHandler?.(frame)
       }
       this.compactHistorySupported = features.capabilities.includes('remote.history.compact.v1')
+      this.binaryUploads = features.capabilities.includes('workspace.upload.v1') && features.capabilities.includes('workspace.upload.binary.v1')
+      const sender = this.binaryUploads && features.capabilities.includes(LAN_UPLOAD_CAPABILITY) ? nativeWebSocketSender() : undefined
+      const carrier = this.transport
+      if(sender && carrier) this.lanUploads = new LanUploadRoutes({
+        control: core, identity, host, sender,
+        current: () => this.core === core && this.transport === carrier,
+        mode: () => carrier.getStats().mode,
+        details: () => carrier.connectionDetails(),
+        connectionId: () => carrier.connectionInfo().connectionId,
+      })
       this.applyBackendFeatures(core, features)
       this.unsubscribeArchived = this.cursor?.onSessionArchived(data => {
         if (this.core === core) options.onOpencodeArchived?.(data.sessionId)
@@ -175,18 +204,25 @@ export class AndroidRemoteConnection {
           {
             clientVersion: host.clientVersion,
             harnessVersion: host.harnessVersion,
+            capabilities: features.capabilities,
             ...(features.sessionFormat === undefined ? {} : { sessionFormat: features.sessionFormat }),
           },
           frame => emitFrame(frame as unknown as MuxStreamFrame),
+          { store: compactionStore, scope: host.deviceId },
         )
         alpha.start()
+        // Reconcile attempts persisted before the disconnect. This only queries
+        // the Host; it never submits a new compaction.
+        void alpha.resumeCompactions().catch(() => undefined)
         this.proxy = alpha
         this.closeMux = async (notifyRemote = true) => { await alpha.close(notifyRemote) }
       } else {
         throw new Error('The remote Host exposes no supported Harness transport.')
       }
       this.scheduleHealthCheck(core)
+      connectionLog('connect', { attempt, phase: 'ready' })
     } catch (error) {
+      connectionLog('connect', { attempt, phase: 'failed', reason: connectionFailure(error) })
       if (attempt === this.connectionAttempt) await this.clearConnection()
       throw error
     }
@@ -202,6 +238,7 @@ export class AndroidRemoteConnection {
   }
 
   private applyBackendFeatures(core: RemoteClientCore, features: RemoteHostFeatures): void {
+    this.sessionEventsSupported = features.sessionEvents
     this.pluginRouteSupported = features.pluginRoute
     this.codexAvailable = features.capabilities.includes('codex.appserver.transfer.v1')
       && remoteWorkspaceTypeAvailable(features.capabilities, features.workspaceTypes, 'codex', 'codex.appserver.v1')
@@ -270,9 +307,11 @@ export class AndroidRemoteConnection {
     )
   }
 
+  supportsBinaryUpload(): boolean { return this.core !== undefined && this.binaryUploads }
+
   async rpc<T = unknown>(method: string, params: unknown, signal?: AbortSignal): Promise<T> {
     if (this.core === undefined) throw new Error(strings.runtime.connectHostFirst)
-    return this.core.rpc<T>(method, params, signal)
+    return this.lanUploads ? this.lanUploads.rpc<T>(method, params, signal) : this.core.rpc<T>(method, params, signal)
   }
 
   /** Optional CodeX business client; available only when the Host advertises both domain capabilities. */
@@ -290,6 +329,10 @@ export class AndroidRemoteConnection {
     if (sessionId?.startsWith('opencode:') && this.cursor !== undefined) return new AcpSessionTools(this.cursor, 'opencode')
     if (this.sessionTools === undefined) throw Object.assign(new Error('Native session tools require a compatible Host.'), { code: 'FEATURE_NOT_SUPPORTED' })
     return this.sessionTools
+  }
+
+  hasSessionEvents(): boolean {
+    return this.sessionEventsSupported
   }
 
   hasCodex(): boolean {
@@ -399,12 +442,12 @@ export class AndroidRemoteConnection {
         // streaming resumes. Confirm with one fast retry first.
         this.healthCheckFailures += 1
         if (this.healthCheckFailures >= 2) {
-          console.info('[dsh-remote] Carrier health check failed repeatedly; closing carrier')
+          connectionLog('health-failed', { phase: 'closed' })
           // close() on the core publishes the same offline/recovery transition
           // as a socket close, including when the OS never delivered onclose.
           void core.close().catch(() => undefined)
         } else {
-          console.info('[dsh-remote] Carrier health check failed once; re-probing shortly')
+          connectionLog('health-failed', { phase: 'checking' })
           this.scheduleHealthCheck(core, 5_000)
         }
       })
@@ -432,6 +475,10 @@ export class AndroidRemoteConnection {
     this.closeMux = undefined
     const core = this.core
     this.core = undefined
+    this.binaryUploads = false
+    const lanUploads = this.lanUploads
+    this.lanUploads = undefined
+    await lanUploads?.close()
     // Closing the whole transport makes a remote stream-close redundant.
     // Only remove the local subscription here so a half-open RTC path cannot
     // add another RPC timeout before recovery begins.

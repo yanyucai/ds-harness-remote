@@ -10,26 +10,42 @@ This remains a small self-hosted Server that we intend to maintain. The product 
 
 The `/` landing page links to `/app/login`; a successful sign-in continues to `/app/remote`. Point both Host and Client at the same Server URL and use the same account and password. Device credentials are persisted by the Server, while Web sessions use an HttpOnly cookie.
 
+## Refresh response recovery
+
+If a refresh succeeds but its response is lost, retrying the previous refresh token returns the same successor pair, including after a Server restart. Recovery remains available until that successor is rotated again, revoked, or expired; it does not extend either token's lifetime. An expired recovered access token can be replaced by rotating the recovered refresh token. Older tokens are rejected without revoking current credentials.
+
+Existing device state remains compatible. Tokens already consumed before this Server upgrade have no recovery metadata and cannot be recovered. Revoked or expired credentials still require sign-in. Updating the Plugin alone does not add this Server behavior. Recovery metadata contains no plaintext bearer tokens; see [the refresh protocol](../../docs/protocol.md#82-refresh).
+
 ## Docker deployment
+
+Deploy the latest official image (`latest`):
+
+```text
+ghcr.io/liguobao/ds-harness-remote/server:latest
+```
 
 ```bash
 cd apps/server
 cp .env.example .env
 # Edit .env: set your account, password, and public URL
-docker compose up -d --build
+docker compose pull server
+docker compose up -d --no-build server
 ```
 
 Open <http://localhost:8080>. Device credentials persist in the `server-data` volume. Stop the service with `docker compose down`.
 
-Public image: `ghcr.io/liguobao/ds-harness-remote/server:latest`. Pull it directly when needed:
+To update to the latest published image, run these commands in the same directory, keeping your `.env` and existing data volume:
 
 ```bash
-docker pull ghcr.io/liguobao/ds-harness-remote/server:latest
+docker compose pull server
+docker compose up -d --no-build server
 ```
+
+`latest` tracks the most recent image published by the Tag workflow, rather than the main branch. To build from the current source instead, run `docker compose up -d --build server`.
 
 If an older image fails to resolve `@dsh-remote/protocol`, update the source and rebuild with `docker compose build --no-cache server && docker compose up -d server`. The image explicitly includes the compiled protocol package and checks the Server import graph during the build. Rebuilding preserves the data volume.
 
-The GitHub Tag workflow builds the production image. Put an HTTPS reverse proxy in front of it instead of exposing the Node listener directly to the public internet.
+The GitHub Tag workflow publishes a multi-platform production image for `linux/amd64` and `linux/arm64`. Docker automatically selects the matching architecture when pulling the image. Put an HTTPS reverse proxy in front of it instead of exposing the Node listener directly to the public internet.
 
 ### Blank page or static assets returning 403
 

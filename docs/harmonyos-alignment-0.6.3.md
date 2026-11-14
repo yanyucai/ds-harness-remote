@@ -103,3 +103,21 @@ Intelligent UI 来源：dreamfarer-space/deepseek-harness-intelligent-ui，提�
 真机复现：新设备可登录、识别在线主机，WebRTC 已选通 LAN，随后页面报 `performance is not defined`。共享 ControlLease 在直连授权租约启动时以及 RemoteGateway 请求期限依赖 `performance.now()`；ArkTS 原生运行环境没有这一浏览器全局，Android runtime 自带该接口，导致两端表现不同。
 
 在平台初始化时，仅当该接口缺失才注入 HarmonyOS systemDateTime STARTUP 单调毫秒时钟，包含深度休眠时间；不使用会受系统时间调整影响的 Date.now() 替代。已有 Performance 实现保留。新增无 Performance 环境下的共享租约接入及回拨/休眠过期回归测试。SDK 检查、97 tests、原生构建通过。用户完成 HoKit 签装后，HDC 确认手机版本为 harmony.30 / 6831。真机已成功建立 Noise IK LAN 连接并加载工作区、Harness/CodeX 目录计数及会话列表；刷新和约半分钟 Home 后返回仍保持可用。本次未发送消息、未清理账号，未观察到原 Performance 异常。该结果不代表长时后台、网络切换或各后端所有交互均已验收。尚未宣称服务器全部场景正常，结论仅针对已复现异常。
+
+## 0.6.5 / harmony.31（6832）：再次对齐 Android main
+
+比较基准为 Android main `936d107b918704a91df9988e58991f5076e075c2`，对应 Android `0.6.5` / `versionCode 72`。鸿蒙 `versionName` 改为与 Android 一致的 `0.6.5`；由于设备已安装 6831，内部 `versionCode` 递增为 6832，避免系统把同版本名或较小版本码判为降级。本节替代前文的当前版本状态，历史装机结论不回写。
+
+| 功能域 | 本轮对齐实现 | 边界 |
+| --- | --- | --- |
+| 共享协议与连接 | 合入最新控制、认证、恢复、WebRTC、中继和压缩状态处理；为 ArkTS 补 `AbortSignal.any/timeout/abort` 及单调时钟兼容 | Node 测试不能代替真实八后端、局域网切换和 TURN 验收 |
+| 文件与视频上传 | 普通文件、视频、图片选择；流式分块、进度、取消、会话切换隔离；复用 Android `uploadFileReaderToWorkspace` | 仍受 Host 上限、手机内存和系统文件选择器约束；取消不使用提交、换通道重放或伪造成功 |
+| 会话同步 | 接入 `session/catalog-changed`、`session/status`，同步会话标题、归档、状态与 Bot 会话目录 | 以 Host 实际发布的目录和权限为界 |
+| 压缩 | 异步 `/compact` 跟踪、恢复、成功/失败状态与取消；客户端状态与当前会话绑定 | 未由 Host 返回的进度或结果不会本地推测 |
+| Bot | 实时卡片、普通会话 Bot 状态绑定、群聊回复历史回退；DS-Bot 通用、模型、本地 Agent、Bot、群聊、连接器、IM、能力、浏览器、电脑、定时任务、用量、密钥和记忆入口 | provider 密钥、连接器授权和主机电脑权限仍由 Host 原生 DS-Bot 配置 |
+| 外观与活动 | 字号、行距、字距、主题色、气泡、代码配色、恢复默认；活动紧凑、卡片、隐藏三种模式；新控件补齐七种语言 | 动态 Host 内容不强制翻译 |
+| UI | Markdown 代码高亮、主题色、Mermaid 兼容；路径和固定操作图标保留稳定布局 | 读屏、大字体、横屏和复杂 ArkWeb 内容仍需真机验收 |
+
+统一验证：鸿蒙 SDK/ArkTS 检查通过；鸿蒙 7 个测试文件 / 102 项通过；Android 80 个测试文件 / 687 项通过；client-core 6 个测试文件 / 63 项通过；`git diff --check` 无空白错误。首次运行 Android 与 client-core 测试时 workspace `dist` 入口尚未生成，失败发生在测试收集阶段；构建 protocol/crypto/webrtc/client-core 依赖后原样重跑通过，没有跳过用例。
+
+原生 Hvigor `assembleHap` 成功，未签名包内元数据确认 `bundleName io.github.dshremote.harmony`、`versionName 0.6.5`、`versionCode 6832`。最终 HAP 大小 23,555,070 字节，SHA-256 为 `a8723e0b97bf082e954913a85b7ba16f25ece9082617ce9ad90de81380344e81`。未签名 HAP 必须由 HoKit 或匹配的开发者 Profile 签名后覆盖安装；本轮代码和包尚未推送 GitHub。此前的 harmony.30 真机连接通过不能自动证明 0.6.5 新增路径已通过。

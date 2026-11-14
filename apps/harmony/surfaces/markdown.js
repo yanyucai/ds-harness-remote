@@ -1,3 +1,5 @@
+import { highlightCode, DARK_CODE_PALETTE, LIGHT_CODE_PALETTE } from '../../android/src/ui/syntax-highlight'
+import { normalizeChatAppearance, resolveChatMetrics, CHAT_ACCENT_SWATCHES } from '../../android/src/ui/theme'
 import MarkdownIt from 'markdown-it'
 import { installMath } from '../../android/src/ui/markdown-math'
 import { renderMathSvg } from '../../android/src/ui/math-svg'
@@ -9,12 +11,23 @@ for (const name of ['math_block','math_inline']) md.renderer.rules[name] = (toke
   return result ? `<span role="img" aria-label="${md.utils.escapeHtml(source)}" style="display:${name==='math_block'?'block':'inline-block'};overflow:auto">${result.xml}</span>` : md.utils.escapeHtml(source)
 }
 let revision = 0
+let darkCode = false
+md.options.highlight = (source, language) => {
+  if (language === 'mermaid') return '<pre><code class="language-mermaid">'+md.utils.escapeHtml(source)+'</code></pre>'
+  const palette = darkCode ? DARK_CODE_PALETTE : LIGHT_CODE_PALETTE
+  return '<pre style="background:'+palette.background+';color:'+palette.plain+'"><code>'+highlightCode(source, language).map(token => '<span style="color:'+palette[token.kind]+'">'+md.utils.escapeHtml(token.text)+'</span>').join('')+'</code></pre>'
+}
 window.__image = (stamp,index,uri) => { if (stamp !== revision || !/^data:image\/(png|jpeg|gif|webp);base64,/.test(uri)) return; const image=document.querySelector(`[data-image="${index}"]`);if(image)image.src=uri }
 window.receive = async value => {
   const stamp = ++revision
   document.body.style.color = value.dark ? '#ddd' : '#222'
-  document.body.style.fontSize = value.density === 'standard' ? '16px' : '15px'
-  document.body.style.lineHeight = value.density === 'standard' ? '1.7' : '1.5'
+  const appearance = normalizeChatAppearance(value.appearance)
+  const metrics = resolveChatMetrics(value.density === 'standard' ? 'standard' : 'compact', appearance)
+  darkCode = appearance.codeTheme === 'dark' || appearance.codeTheme === 'auto' && value.dark
+  document.body.style.fontSize = metrics.bodyFontSize+'px'
+  document.body.style.lineHeight = String(metrics.bodyLineHeight / metrics.bodyFontSize)
+  document.body.style.letterSpacing = metrics.letterSpacing+'px'
+  document.documentElement.style.setProperty('--accent', CHAT_ACCENT_SWATCHES[appearance.accent][value.dark ? 'dark' : 'light'].primary)
   document.getElementById('body').innerHTML = md.render(value.text || '')
   let index = 0
   for (const image of document.images) {

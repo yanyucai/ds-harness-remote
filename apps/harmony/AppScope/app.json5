@@ -2,8 +2,8 @@
   "app": {
     "bundleName": "io.github.dshremote.harmony",
     "vendor": "liguobao",
-    "versionCode": 6831,
-    "versionName": "0.6.3-harmony.30",
+    "versionCode": 6832,
+    "versionName": "0.6.5",
     "icon": "$media:app_icon",
     "label": "$string:app_name"
   }

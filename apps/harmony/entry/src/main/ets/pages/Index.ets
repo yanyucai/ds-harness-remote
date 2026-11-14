@@ -13,12 +13,13 @@ import { LocalSurface } from '../components/LocalSurface'
 import { RtcSurface } from '../components/RtcSurface'
 import { runtime } from '../RuntimeHost'
 import { ViewState, TimelineRow, CatalogRow, DeviceRow, ModelRow, ModelEffort, UserQuestion, QuestionOption, QuestionAnswer, emptyState } from '../models/ViewState'
-import { ActivityRow, JobRow, BackendTab, OverviewRow, ActionInput, StagedFile, BotExtra, FailedSend, PresetRow, QueueRow, PromptRow } from '../models/ViewState'
+import { BotDefinition, ActivityRow, JobRow, BackendTab, OverviewRow, ActionInput, StagedFile, BotExtra, FailedSend, PresetRow, QueueRow, PromptRow } from '../models/ViewState'
 import { SkillRow, FileRow, InfoRow, PluginRow, FormRow, TaskRow, RecordRow, TerminalRow, UiArtifactRow, BotReplyRow, BotEntryRow, NetworkRow, NetworkSection } from '../models/ViewState'
 
 interface PromptAttachment { data: string; mediaType: string; name?: string }
 interface BotPending { id: string }
 interface SurfaceEvent { type?: string; url?: string; text?: string; data?: string; cols?: number; rows?: number }
+interface ChatAppearanceValue { fontScale?: string; spacingScale?: string; letterSpacing?: string; accent?: string; bubbleStyle?: string; codeTheme?: string }
 interface PrefOption { id: string; name: string }
 
 @Component
@@ -68,6 +69,8 @@ struct TimelineCard {
   @Prop dark: boolean = false
   @State imagePreview: string = ''
   @Prop row: TimelineRow
+  @Prop accent: string = '#4D6BFE'
+  @Prop appearance: string = '{}'
   @Prop density: string = 'compact'
   onApproval: (id: string, decision: string) => void = () => {}
   onQuestion: (id: string, answers: QuestionAnswer[]) => void = () => {}
@@ -75,6 +78,18 @@ struct TimelineCard {
   onFeedback: (id: string, rating: string) => void = () => {}
   @State expanded: boolean = false
 
+  private bubbleColor(): ResourceColor {
+    if (this.row.title !== '你') return $r('sys.color.comp_background_primary')
+    const value: ChatAppearanceValue = JSON.parse(this.appearance) as ChatAppearanceValue
+    if (value.bubbleStyle === 'minimal') return Color.Transparent
+    if (value.bubbleStyle === 'tinted') return '#1A' + this.accent.slice(1)
+    if (value.bubbleStyle === 'solid') return this.accent
+    return $r('sys.color.comp_background_tertiary')
+  }
+  private solidBubble(): boolean {
+    const value: ChatAppearanceValue = JSON.parse(this.appearance) as ChatAppearanceValue
+    return this.row.title === '你' && value.bubbleStyle === 'solid'
+  }
   @Builder
   fullImage() {
     Stack({ alignContent: Alignment.TopEnd }) {
@@ -98,7 +113,7 @@ struct TimelineCard {
           .fontColor(this.row.turnStatus === 'failed' ? '#C64B43' : $r('sys.color.font_secondary'))
       }
       if (this.row.text) {
-        LocalSurface({ scope: this.scope, dark: this.dark, payload: JSON.stringify({ text: this.row.text, dark: this.dark, density: this.density, copyLabel: runtime.translate('复制') }),
+        LocalSurface({ scope: this.scope, dark: this.dark, payload: JSON.stringify({ text: this.row.text, dark: this.dark || this.solidBubble(), density: this.density, appearance: JSON.parse(this.appearance), copyLabel: runtime.translate('复制') }),
           onAction: async (raw: string): Promise<boolean> => {
             const value: SurfaceEvent = JSON.parse(raw) as SurfaceEvent
             return runtime.perform('openLink', JSON.stringify({ text: value.url }))
@@ -244,7 +259,7 @@ struct TimelineCard {
       }
     }
     .alignItems(HorizontalAlign.Start).width('100%').padding(16).borderRadius(18)
-    .backgroundColor(this.row.title === '你' ? $r('sys.color.comp_background_tertiary') : $r('sys.color.comp_background_primary'))
+    .backgroundColor(this.bubbleColor())
   }
 }
 
@@ -640,7 +655,7 @@ struct Index {
   @Builder
   optionRow(icon: string, label: string, value: string, page: string) {
     Row({ space: 12 }) {
-      Text(icon).fontSize(17).width(24).textAlign(TextAlign.Center).fontColor('#4B78E6')
+      Text(icon).fontSize(17).width(24).textAlign(TextAlign.Center).fontColor(this.state.accentColor)
       Text(label).fontSize(15).layoutWeight(1)
       Text(value).fontSize(13).fontColor($r('sys.color.font_secondary')).maxLines(1)
         .textOverflow({ overflow: TextOverflow.Ellipsis }).constraintSize({ maxWidth: 150 })
@@ -686,7 +701,7 @@ struct Index {
                 Text(item.description).fontSize(12).fontColor($r('sys.color.font_secondary'))
                   .width('100%').maxLines(3).textOverflow({ overflow: TextOverflow.Ellipsis })
               }.layoutWeight(1).alignItems(HorizontalAlign.Start)
-              if (item.current) { Text('✓').fontSize(17).fontColor('#4B78E6') }
+              if (item.current) { Text('✓').fontSize(17).fontColor(this.state.accentColor) }
             }.width('100%').padding({ top: 10, bottom: 10 })
           }.enabled(!item.broken && !item.current && !this.state.busy)
             .onClick(() => { this.showMore = false; this.panelPage = ''; this.send(action, { id: item.id }) })
@@ -702,11 +717,12 @@ struct Index {
         this.sheetTitle('更多操作', false)
         Row({ space: 12 }) {
           Button(runtime.translate('拍照')).layoutWeight(1).height(56).backgroundColor($r('sys.color.comp_background_tertiary'))
-            .fontColor('#4B78E6').enabled(!this.state.busy).onClick(() => { this.showMore = false; this.panelPage = ''; this.takePhoto() })
+            .fontColor(this.state.accentColor).enabled(!this.state.busy).onClick(() => { this.showMore = false; this.panelPage = ''; this.takePhoto() })
           Button(runtime.translate('相册')).layoutWeight(1).height(56).backgroundColor($r('sys.color.comp_background_tertiary'))
-            .fontColor('#4B78E6').enabled(!this.state.busy).onClick(() => { this.showMore = false; this.panelPage = ''; this.pickImage() })
+            .fontColor(this.state.accentColor).enabled(!this.state.busy).onClick(() => { this.showMore = false; this.panelPage = ''; this.pickImage() })
+          Button(runtime.translate('视频')).layoutWeight(1).height(56).enabled(this.state.connected).onClick(() => { this.showMore = false; this.pickVideo() })
           Button(runtime.translate('文件')).layoutWeight(1).height(56).backgroundColor($r('sys.color.comp_background_tertiary'))
-            .fontColor('#4B78E6').enabled(!this.state.busy).onClick(() => { this.showMore = false; this.panelPage = ''; this.pickDocument() })
+            .fontColor(this.state.accentColor).enabled(!this.state.busy).onClick(() => { this.showMore = false; this.panelPage = ''; this.pickDocument() })
         }.width('100%')
         if (this.state.panelWarning.length > 0) {
           Text(this.state.panelWarning).fontSize(12).fontColor('#9D6B20').width('100%')
@@ -721,10 +737,10 @@ struct Index {
         this.optionRow('🤖', 'Bot 团队', this.state.bots.length > 0 ? `${this.state.bots.length} 个成员` : '查看', 'bots')
         this.optionRow('🌐', '网络与链路', this.networkStatusSummary(), 'network')
         Row({ space: 12 }) {
-          Text('⏱').fontSize(17).width(24).textAlign(TextAlign.Center).fontColor('#4B78E6')
+          Text('⏱').fontSize(17).width(24).textAlign(TextAlign.Center).fontColor(this.state.accentColor)
           Text(runtime.translate('紧凑历史')).fontSize(15).layoutWeight(1)
           Toggle({ type: ToggleType.Switch, isOn: this.state.compactHistory })
-            .selectedColor('#4B78E6').enabled(!this.state.busy)
+            .selectedColor(this.state.accentColor).enabled(!this.state.busy)
             .onChange((on: boolean) => { if (on !== this.state.compactHistory) { this.send('compactHistory', {}) } })
         }.width('100%').height(52).padding({ left: 2, right: 2 })
       } else if (this.panelPage === 'mode') {
@@ -784,7 +800,7 @@ struct Index {
           Row({ space: 8 }) {
             Text(this.state.filePreview.name).fontSize(14).layoutWeight(1).fontFamily('monospace').maxLines(1)
               .textOverflow({ overflow: TextOverflow.Ellipsis })
-            Text(runtime.translate('只读')).fontSize(10).fontColor('#4B78E6').backgroundColor('#1A4B78E6')
+            Text(runtime.translate('只读')).fontSize(10).fontColor(this.state.accentColor).backgroundColor('#1A4B78E6')
               .padding({ left: 6, right: 6, top: 2, bottom: 2 }).borderRadius(4)
             Button('✕').accessibilityText(runtime.translate('关闭')).fontSize(15).backgroundColor(Color.Transparent).fontColor($r('sys.color.font_secondary'))
               .onClick(() => { this.send('closeFile', {}) })
@@ -801,7 +817,7 @@ struct Index {
           if (this.state.filePreview.error.length > 0) {
             Column({ space: 8 }) {
               Text(this.state.filePreview.error).fontSize(12).fontColor($r('sys.color.warning')).width('100%')
-              Button(runtime.translate('重试')).fontSize(11).height(28).backgroundColor(Color.Transparent).fontColor('#4B78E6')
+              Button(runtime.translate('重试')).fontSize(11).height(28).backgroundColor(Color.Transparent).fontColor(this.state.accentColor)
                 .onClick(() => { this.send('readFile', { id: this.state.filePreview.path, offset: this.state.filePreview.offset } as ActionInput) })
             }.width('100%').padding(10).backgroundColor($r('sys.color.comp_background_tertiary')).borderRadius(10)
           } else if (this.state.filePreview.kind === 'text') {
@@ -815,11 +831,11 @@ struct Index {
                 : `第 ${this.state.filePreview.offset}–${this.state.filePreview.offset + Math.max(0, this.state.filePreview.lines - 1)} 行`)
                 .fontSize(11).fontColor($r('sys.color.font_secondary')).layoutWeight(1)
               if (this.state.filePreview.offset > 1) {
-                Button(runtime.translate('上一页')).fontSize(11).height(28).backgroundColor(Color.Transparent).fontColor('#4B78E6')
+                Button(runtime.translate('上一页')).fontSize(11).height(28).backgroundColor(Color.Transparent).fontColor(this.state.accentColor)
                   .onClick(() => { this.send('readFile', { id: this.state.filePreview.path, offset: Math.max(1, this.state.filePreview.offset - 200) } as ActionInput) })
               }
               if (!this.state.filePreview.eof && this.state.filePreview.lines > 0) {
-                Button(runtime.translate('下一页')).fontSize(11).height(28).backgroundColor(Color.Transparent).fontColor('#4B78E6')
+                Button(runtime.translate('下一页')).fontSize(11).height(28).backgroundColor(Color.Transparent).fontColor(this.state.accentColor)
                   .onClick(() => { this.send('readFile', { id: this.state.filePreview.path, offset: this.state.filePreview.offset + this.state.filePreview.lines } as ActionInput) })
               }
             }.width('100%')
@@ -893,7 +909,7 @@ struct Index {
               Row({ space: 10 }) {
                 Column({ space: 3 }) {
                   Text(item.name).fontSize(15).width('100%').maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
-                  Text(item.description).fontSize(12).fontColor(item.description === '回复中' ? '#4B78E6' : $r('sys.color.font_secondary'))
+                  Text(item.description).fontSize(12).fontColor(item.description === '回复中' ? this.state.accentColor : $r('sys.color.font_secondary'))
                 }.layoutWeight(1).alignItems(HorizontalAlign.Start)
                 Text('›').fontSize(17).fontColor($r('sys.color.font_secondary'))
               }.width('100%').padding({ top: 10, bottom: 10 })
@@ -946,7 +962,7 @@ struct Index {
 
   @Builder
   badge(text: string) {
-    Text(text).fontSize(10).fontColor('#4B78E6').borderRadius(8)
+    Text(text).fontSize(10).fontColor(this.state.accentColor).borderRadius(8)
       .padding({ left: 6, right: 6, top: 2, bottom: 2 })
       .backgroundColor($r('sys.color.comp_background_tertiary'))
   }
@@ -997,7 +1013,7 @@ struct Index {
                         .maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis })
                     }
                     if (row.feature.length > 0) {
-                      Text(row.feature).fontSize(11).fontColor('#4B78E6').width('100%')
+                      Text(row.feature).fontSize(11).fontColor(this.state.accentColor).width('100%')
                     }
                     if (this.pluginMeta(row).length > 0) {
                       Text(this.pluginMeta(row)).fontSize(11).width('100%').maxLines(2)
@@ -1008,11 +1024,11 @@ struct Index {
                     }
                   }.layoutWeight(1).alignItems(HorizontalAlign.Start)
                   if (row.form.length > 0 && row.enabled) {
-                    Button(runtime.translate('设置')).fontSize(12).height(32).backgroundColor(Color.Transparent).fontColor('#4B78E6')
+                    Button(runtime.translate('设置')).fontSize(12).height(32).backgroundColor(Color.Transparent).fontColor(this.state.accentColor)
                       .enabled(!this.state.busy)
                       .onClick(() => { this.showPlugins = false; this.showPluginForm = true; this.send('pluginForm', { id: row.form }) })
                   }
-                  Toggle({ type: ToggleType.Switch, isOn: row.enabled }).selectedColor('#4B78E6')
+                  Toggle({ type: ToggleType.Switch, isOn: row.enabled }).selectedColor(this.state.accentColor)
                     .enabled(row.id.length > 0 && !row.readOnly && !this.state.busy)
                     .onChange((on: boolean) => {
                       if (on !== row.enabled) { this.send('pluginToggle', { id: row.id, mode: on ? 'on' : 'off' }) }
@@ -1060,7 +1076,7 @@ struct Index {
                       .fontColor($r('sys.color.font_secondary'))
                   }.layoutWeight(1).alignItems(HorizontalAlign.Start)
                   if (row.kind === 'boolean') {
-                    Toggle({ type: ToggleType.Switch, isOn: this.formFlags[index] === true }).selectedColor('#4B78E6')
+                    Toggle({ type: ToggleType.Switch, isOn: this.formFlags[index] === true }).selectedColor(this.state.accentColor)
                       .enabled(this.state.settingsWritable && !this.state.busy)
                       .onChange((on: boolean) => {
                         this.formFlags = this.formFlags.map((old: boolean, at: number): boolean => at === index ? on : old)
@@ -1092,7 +1108,7 @@ struct Index {
           }.width('100%')
         }.constraintSize({ maxHeight: 380 }).width('100%')
         Row({ space: 10 }) {
-          Button(runtime.translate('保存')).layoutWeight(1).backgroundColor('#4B78E6')
+          Button(runtime.translate('保存')).layoutWeight(1).backgroundColor(this.state.accentColor)
             .enabled(this.state.settingsWritable && !this.state.busy)
             .onClick(() => {
               runtime.perform('pluginSave', JSON.stringify({ text: this.formPayload() } as ActionInput)).catch(() => {})
@@ -1115,7 +1131,7 @@ struct Index {
       Row({ space: 8 }) {
         Text(runtime.translate('自动化任务')).fontSize(19).fontWeight(FontWeight.Bold).layoutWeight(1)
         Button(this.taskFilterLabel()).fontSize(12).height(32).backgroundColor(Color.Transparent)
-          .fontColor('#4B78E6').onClick(() => { this.taskFilter = this.nextTaskFilter() })
+          .fontColor(this.state.accentColor).onClick(() => { this.taskFilter = this.nextTaskFilter() })
         Button('⟳').fontSize(15).width(34).height(34).backgroundColor(Color.Transparent)
           .fontColor($r('sys.color.font_secondary')).enabled(!this.state.busy)
           .onClick(() => { this.send('tasks', {}) })
@@ -1139,7 +1155,7 @@ struct Index {
                   Text(row.status).fontSize(11)
                     .fontColor(row.active ? '#39966C' : $r('sys.color.font_secondary'))
                 }.width('100%').alignItems(VerticalAlign.Center)
-                Text(row.schedule).fontSize(12).fontColor('#4B78E6').width('100%')
+                Text(row.schedule).fontSize(12).fontColor(this.state.accentColor).width('100%')
                 if (row.next.length > 0) {
                   Text(runtime.translate(`下次计划时间：${row.next}`)).fontSize(11).width('100%')
                     .fontColor($r('sys.color.font_secondary'))
@@ -1157,7 +1173,7 @@ struct Index {
                 Row({ space: 8 }) {
                   Blank()
                   Button(runtime.translate(row.active ? '停用' : '启用')).fontSize(12).onClick(() => { this.send('taskToggle', { id: row.id, name: row.session }) })
-                  Button(runtime.translate('运行记录')).fontSize(12).height(30).backgroundColor(Color.Transparent).fontColor('#4B78E6')
+                  Button(runtime.translate('运行记录')).fontSize(12).height(30).backgroundColor(Color.Transparent).fontColor(this.state.accentColor)
                     .enabled(!this.state.busy)
                     .onClick(() => {
                       this.showTasks = false; this.showRecords = true
@@ -1225,6 +1241,32 @@ struct Index {
       .backgroundColor($r('sys.color.background_primary')).borderRadius({ topLeft: 24, topRight: 24 })
   }
 
+  private appearanceValue(key: string): string {
+    const value: ChatAppearanceValue = JSON.parse(this.state.chatAppearance) as ChatAppearanceValue
+    if (key === 'fontScale') return value.fontScale ?? 'md'
+    if (key === 'spacingScale') return value.spacingScale ?? 'balanced'
+    if (key === 'letterSpacing') return value.letterSpacing ?? 'normal'
+    if (key === 'accent') return value.accent ?? 'deepseek'
+    if (key === 'bubbleStyle') return value.bubbleStyle ?? 'soft'
+    return value.codeTheme ?? 'auto'
+  }
+  @Builder
+  appearanceRow(label: string, key: string, values: string[], names: string[]) {
+    Column({ space: 6 }) {
+      Text(runtime.translate(label)).fontSize(13).width('100%')
+      Scroll() {
+        Row({ space: 8 }) {
+          ForEach(values, (value: string, index: number) => {
+            Button(runtime.translate(names[index])).fontSize(12)
+              .backgroundColor(this.appearanceValue(key) === value ? this.state.accentColor : $r('sys.color.comp_background_tertiary'))
+              .fontColor(this.appearanceValue(key) === value ? Color.White : $r('sys.color.font_primary'))
+              .onClick(() => { this.send('setChatAppearance', { name: key, text: value }) })
+          })
+        }
+      }.scrollable(ScrollDirection.Horizontal).width('100%')
+    }.width('100%')
+  }
+
   /** Android's 设置 sheet: language, appearance, typography density, compact history. */
   @Builder
   settingsSheet() {
@@ -1232,6 +1274,23 @@ struct Index {
       this.sheetTitle('设置', false)
       Scroll() {
         Column({ space: 14 }) {
+          Text(runtime.translate('聊天外观')).fontSize(16).fontWeight(FontWeight.Bold).width('100%')
+          this.appearanceRow('字号', 'fontScale', ['sm','md','lg','xl'], ['小','标准','大','特大'])
+          this.appearanceRow('行距', 'spacingScale', ['tight','balanced','relaxed'], ['紧凑','均衡','宽松'])
+          this.appearanceRow('字距', 'letterSpacing', ['normal','wide','wider'], ['标准','宽','更宽'])
+          this.appearanceRow('主题色', 'accent', ['deepseek','emerald','violet','amber','graphite'], ['蓝','绿','紫','琥珀','石墨'])
+          this.appearanceRow('气泡', 'bubbleStyle', ['soft','tinted','solid','minimal'], ['柔和','浅色','纯色','极简'])
+          this.appearanceRow('代码配色', 'codeTheme', ['auto','dark','light'], ['跟随主题','深色','浅色'])
+          Button(runtime.translate('恢复默认外观')).onClick(() => { this.send('resetChatAppearance', {}) })
+          Text(runtime.translate('活动显示')).fontSize(13).width('100%')
+          Row({space:8}) {
+            ForEach(['compact','cards','hidden'], (mode: string) => {
+              Button(runtime.translate(mode === 'compact' ? '紧凑' : mode === 'cards' ? '卡片' : '隐藏')).fontSize(12)
+                .backgroundColor(this.state.activityDockMode === mode ? this.state.accentColor : $r('sys.color.comp_background_tertiary'))
+                .onClick(() => { this.send('setActivityDockMode', {name: mode}) })
+            })
+          }
+          Divider()
           // 语言
           Column({ space: 6 }) {
             Text(runtime.translate('语言')).fontSize(13).fontWeight(FontWeight.Bold).width('100%')
@@ -1251,7 +1310,7 @@ struct Index {
                     Text(item.name).fontSize(15).layoutWeight(1)
                       .fontWeight(this.state.languagePreference === item.id ? FontWeight.Bold : FontWeight.Normal)
                     if (this.state.languagePreference === item.id) {
-                      Text('✓').fontSize(16).fontColor('#4B78E6')
+                      Text('✓').fontSize(16).fontColor(this.state.accentColor)
                     }
                   }.width('100%').padding({ top: 10, bottom: 10, left: 4, right: 4 })
                 }.onClick(() => { this.send('setLanguage', { id: item.id, name: item.id }) })
@@ -1271,7 +1330,7 @@ struct Index {
                 { id: 'dark', name: runtime.translate('深色') },
               ], (item: PrefOption) => {
                 Button(item.name).layoutWeight(1).height(36).fontSize(13)
-                  .backgroundColor(this.state.themePreference === item.id ? '#4B78E6' : $r('sys.color.comp_background_tertiary'))
+                  .backgroundColor(this.state.themePreference === item.id ? this.state.accentColor : $r('sys.color.comp_background_tertiary'))
                   .fontColor(this.state.themePreference === item.id ? Color.White : $r('sys.color.font_primary'))
                   .onClick(() => { this.send('setTheme', { id: item.id, name: item.id }) })
               }, (item: PrefOption) => `theme|${item.id}|${item.name}`)
@@ -1290,7 +1349,7 @@ struct Index {
                 { id: 'compact', name: runtime.translate('紧凑') },
               ], (item: PrefOption) => {
                 Button(item.name).layoutWeight(1).height(36).fontSize(13)
-                  .backgroundColor(this.state.typographyDensity === item.id ? '#4B78E6' : $r('sys.color.comp_background_tertiary'))
+                  .backgroundColor(this.state.typographyDensity === item.id ? this.state.accentColor : $r('sys.color.comp_background_tertiary'))
                   .fontColor(this.state.typographyDensity === item.id ? Color.White : $r('sys.color.font_primary'))
                   .onClick(() => { this.send('setDensity', { id: item.id, name: item.id }) })
               }, (item: PrefOption) => `density|${item.id}|${item.name}`)
@@ -1306,7 +1365,7 @@ struct Index {
               Text(runtime.translate('缩减历史工具详情，保留正文和状态')).fontSize(11).fontColor($r('sys.color.font_secondary')).width('100%')
             }.layoutWeight(1).alignItems(HorizontalAlign.Start)
             Toggle({ type: ToggleType.Switch, isOn: this.state.compactHistory })
-              .selectedColor('#4B78E6').enabled(!this.state.busy)
+              .selectedColor(this.state.accentColor).enabled(!this.state.busy)
               .onChange((on: boolean) => { if (on !== this.state.compactHistory) { this.send('compactHistory', {}) } })
           }.width('100%').height(52).padding({ left: 2, right: 2 })
 
@@ -1323,7 +1382,7 @@ struct Index {
               Text(runtime.translate('自动连接后返回上次打开的对话，默认关闭')).fontSize(11).fontColor($r('sys.color.font_secondary')).width('100%')
             }.layoutWeight(1).alignItems(HorizontalAlign.Start)
             Toggle({ type: ToggleType.Switch, isOn: this.state.resumeSessionEnabled })
-              .selectedColor('#4B78E6').enabled(!this.state.busy)
+              .selectedColor(this.state.accentColor).enabled(!this.state.busy)
               .onChange((on: boolean) => { if (on !== this.state.resumeSessionEnabled) this.send('setResumeSession', { enabled: on }) })
           }.width('100%').padding({ top: 4, bottom: 4 })
           Text(runtime.translate('阅读位置会自动保存；重新打开时回到已加载历史中的相应消息')).fontSize(11)
@@ -1339,7 +1398,7 @@ struct Index {
                 Text(runtime.translate('在应用处于后台时，接收任务完成与审批提示')).fontSize(11).fontColor($r('sys.color.font_secondary')).width('100%')
               }.layoutWeight(1).alignItems(HorizontalAlign.Start)
               Toggle({ type: ToggleType.Switch, isOn: this.state.notificationsEnabled })
-                .selectedColor('#4B78E6')
+                .selectedColor(this.state.accentColor)
                 .onChange((on: boolean) => {
                   if (on !== this.state.notificationsEnabled) {
                     this.send('setNotifications', { name: on ? 'true' : 'false' })
@@ -1347,7 +1406,7 @@ struct Index {
                 })
             }.width('100%').padding({ top: 4, bottom: 4 })
             Button(runtime.translate('开启系统通知权限')).fontSize(13).height(36).backgroundColor($r('sys.color.comp_background_tertiary'))
-              .fontColor('#4B78E6').width('100%')
+              .fontColor(this.state.accentColor).width('100%')
               .onClick(() => { this.send('requestNotificationPermission', {}) })
           }.width('100%').alignItems(HorizontalAlign.Start)
 
@@ -1364,7 +1423,7 @@ struct Index {
                 { id: 'relay', name: runtime.translate('仅控制转发') },
               ], (item: PrefOption) => {
                 Button(item.name).layoutWeight(1).height(36).fontSize(13)
-                  .backgroundColor(this.state.transportPreference === item.id ? '#4B78E6' : $r('sys.color.comp_background_tertiary'))
+                  .backgroundColor(this.state.transportPreference === item.id ? this.state.accentColor : $r('sys.color.comp_background_tertiary'))
                   .fontColor(this.state.transportPreference === item.id ? Color.White : $r('sys.color.font_primary'))
                   .onClick(() => { this.send('setTransportPreference', { mode: item.id }) })
               }, (item: PrefOption) => `trans|${item.id}|${item.name}`)
@@ -1384,11 +1443,11 @@ struct Index {
                 { id: 'danger-full-access', name: runtime.translate('完全权限') },
               ], (item: PrefOption) => {
                 Button(item.name).layoutWeight(1).height(36).fontSize(12)
-                  .backgroundColor(this.state.defaultPermission === item.id ? '#4B78E6' : $r('sys.color.comp_background_tertiary'))
+                  .backgroundColor(this.state.defaultPermission === item.id ? this.state.accentColor : $r('sys.color.comp_background_tertiary'))
                   .fontColor(this.state.defaultPermission === item.id ? Color.White : $r('sys.color.font_primary'))
                   .onClick(() => {
                     if (item.id !== 'danger-full-access') { this.send('setDefaultPermission', { name: item.id }); return }
-                    promptAction.showDialog({ title: runtime.translate('完全权限'), message: runtime.translate('新对话可以修改文件与执行命令，不再逐次询问。'), buttons: [{ text: runtime.translate('取消'), color: '#888888' }, { text: runtime.translate('确认'), color: '#4B78E6' }] }).then((result: promptAction.ShowDialogSuccessResponse) => { if (result.index === 1) this.send('setDefaultPermission', { name: item.id }) })
+                    promptAction.showDialog({ title: runtime.translate('完全权限'), message: runtime.translate('新对话可以修改文件与执行命令，不再逐次询问。'), buttons: [{ text: runtime.translate('取消'), color: '#888888' }, { text: runtime.translate('确认'), color: this.state.accentColor }] }).then((result: promptAction.ShowDialogSuccessResponse) => { if (result.index === 1) this.send('setDefaultPermission', { name: item.id }) })
                   })
               }, (item: PrefOption) => `perm|${item.id}|${item.name}`)
             }.width('100%')
@@ -1403,7 +1462,7 @@ struct Index {
               Text(runtime.translate('在全屏与页面切换时保持系统状态栏可见')).fontSize(11).fontColor($r('sys.color.font_secondary')).width('100%')
             }.layoutWeight(1).alignItems(HorizontalAlign.Start)
             Toggle({ type: ToggleType.Switch, isOn: this.state.statusBarVisible })
-              .selectedColor('#4B78E6')
+              .selectedColor(this.state.accentColor)
               .onChange((on: boolean) => { if (on !== this.state.statusBarVisible) this.send('setStatusBar', { enabled: on }) })
           }.width('100%').padding({ top: 4, bottom: 4 })
 
@@ -1469,12 +1528,12 @@ struct Index {
                 Text(bot.name.slice(0, 1).toUpperCase())
                   .fontSize(16).fontWeight(FontWeight.Bold).fontColor(Color.White)
                   .width(36).height(36).textAlign(TextAlign.Center).borderRadius(18)
-                  .backgroundColor(bot.color.length > 0 ? bot.color : '#4B78E6')
+                  .backgroundColor(bot.color.length > 0 ? bot.color : this.state.accentColor)
                 Column({ space: 3 }) {
                   Row({ space: 6 }) {
                     Text(bot.name).fontSize(15).fontWeight(FontWeight.Medium)
                     if (bot.main) {
-                      Text(runtime.translate('主 Bot')).fontSize(10).fontColor('#4B78E6')
+                      Text(runtime.translate('主 Bot')).fontSize(10).fontColor(this.state.accentColor)
                         .backgroundColor('#1A4B78E6').padding({ left: 4, right: 4, top: 1, bottom: 1 }).borderRadius(4)
                     }
                   }
@@ -1482,7 +1541,7 @@ struct Index {
                     .fontSize(12).fontColor($r('sys.color.font_secondary')).maxLines(1)
                 }.layoutWeight(1).alignItems(HorizontalAlign.Start)
                 Button(runtime.translate('打开')).fontSize(12).height(30).backgroundColor($r('sys.color.comp_background_tertiary'))
-                  .fontColor('#4B78E6')
+                  .fontColor(this.state.accentColor)
                   .onClick(() => {
                     this.closePanels()
                     this.send('botSelect', { id: bot.id })
@@ -1550,7 +1609,7 @@ struct Index {
           Text('…').fontSize(14).fontColor($r('sys.color.font_secondary'))
         }
         Button(runtime.translate('＋ 新建')).fontSize(12).height(32).backgroundColor(Color.Transparent)
-          .fontColor('#4B78E6').enabled(!this.state.busy && !this.state.terminalBusy)
+          .fontColor(this.state.accentColor).enabled(!this.state.busy && !this.state.terminalBusy)
           .onClick(() => { this.send('createTerminal', {}) })
         Button('✕').fontSize(18).backgroundColor(Color.Transparent).fontColor($r('sys.color.font_secondary'))
           .onClick(() => { this.closePanels() })
@@ -1561,7 +1620,7 @@ struct Index {
           Row({ space: 8 }) {
             ForEach(this.state.terminals, (item: TerminalRow) => {
               Button(item.title).fontSize(12).height(28)
-                .backgroundColor(this.state.activeTerminalId === item.id ? '#4B78E6' : $r('sys.color.comp_background_tertiary'))
+                .backgroundColor(this.state.activeTerminalId === item.id ? this.state.accentColor : $r('sys.color.comp_background_tertiary'))
                 .fontColor(this.state.activeTerminalId === item.id ? Color.White : $r('sys.color.font_primary'))
                 .enabled(!this.state.terminalBusy)
                 .onClick(() => { this.send('selectTerminal', { id: item.id }) })
@@ -1578,7 +1637,7 @@ struct Index {
       if (this.state.terminalError.length > 0) {
         Row({ space: 8 }) {
           Text(this.state.terminalError).fontSize(12).fontColor($r('sys.color.warning')).layoutWeight(1)
-          Button(runtime.translate('重试')).fontSize(11).height(26).backgroundColor(Color.Transparent).fontColor('#4B78E6')
+          Button(runtime.translate('重试')).fontSize(11).height(26).backgroundColor(Color.Transparent).fontColor(this.state.accentColor)
             .onClick(() => { this.send('retryTerminal', {}) })
         }.width('100%').padding(6).backgroundColor($r('sys.color.comp_background_tertiary')).borderRadius(6)
       }
@@ -1601,31 +1660,31 @@ struct Index {
       Scroll() {
         Row({ space: 6 }) {
           Button('Ctrl+C').fontSize(11).height(28).backgroundColor($r('sys.color.comp_background_tertiary'))
-            .fontColor('#4B78E6').enabled(this.state.terminalWritable)
+            .fontColor(this.state.accentColor).enabled(this.state.terminalWritable)
             .onClick(() => { this.send('writeTerminal', { text: '\x03' }) })
           Button('Tab').fontSize(11).height(28).backgroundColor($r('sys.color.comp_background_tertiary'))
-            .fontColor('#4B78E6').enabled(this.state.terminalWritable)
+            .fontColor(this.state.accentColor).enabled(this.state.terminalWritable)
             .onClick(() => { this.send('writeTerminal', { text: '\t' }) })
           Button('Esc').fontSize(11).height(28).backgroundColor($r('sys.color.comp_background_tertiary'))
-            .fontColor('#4B78E6').enabled(this.state.terminalWritable)
+            .fontColor(this.state.accentColor).enabled(this.state.terminalWritable)
             .onClick(() => { this.send('writeTerminal', { text: '\x1b' }) })
           Button('↑').fontSize(11).height(28).backgroundColor($r('sys.color.comp_background_tertiary'))
-            .fontColor('#4B78E6').enabled(this.state.terminalWritable)
+            .fontColor(this.state.accentColor).enabled(this.state.terminalWritable)
             .onClick(() => { this.send('writeTerminal', { text: '\x1b[A' }) })
           Button('↓').fontSize(11).height(28).backgroundColor($r('sys.color.comp_background_tertiary'))
-            .fontColor('#4B78E6').enabled(this.state.terminalWritable)
+            .fontColor(this.state.accentColor).enabled(this.state.terminalWritable)
             .onClick(() => { this.send('writeTerminal', { text: '\x1b[B' }) })
           Button('←').fontSize(11).height(28).backgroundColor($r('sys.color.comp_background_tertiary'))
-            .fontColor('#4B78E6').enabled(this.state.terminalWritable)
+            .fontColor(this.state.accentColor).enabled(this.state.terminalWritable)
             .onClick(() => { this.send('writeTerminal', { text: '\x1b[D' }) })
           Button('→').fontSize(11).height(28).backgroundColor($r('sys.color.comp_background_tertiary'))
-            .fontColor('#4B78E6').enabled(this.state.terminalWritable)
+            .fontColor(this.state.accentColor).enabled(this.state.terminalWritable)
             .onClick(() => { this.send('writeTerminal', { text: '\x1b[C' }) })
           Button(runtime.translate('退格')).fontSize(11).height(28).backgroundColor($r('sys.color.comp_background_tertiary'))
-            .fontColor('#4B78E6').enabled(this.state.terminalWritable)
+            .fontColor(this.state.accentColor).enabled(this.state.terminalWritable)
             .onClick(() => { this.send('writeTerminal', { text: '\x7f' }) })
           Button(runtime.translate('回车')).fontSize(11).height(28).backgroundColor($r('sys.color.comp_background_tertiary'))
-            .fontColor('#4B78E6').enabled(this.state.terminalWritable)
+            .fontColor(this.state.accentColor).enabled(this.state.terminalWritable)
             .onClick(() => { this.send('writeTerminal', { text: '\r' }) })
           Button(runtime.translate('清屏')).fontSize(11).height(28).backgroundColor($r('sys.color.comp_background_tertiary'))
             .fontColor($r('sys.color.font_secondary'))
@@ -1644,7 +1703,7 @@ struct Index {
               this.terminalInput = ''
             }
           })
-        Button(runtime.translate('发送')).fontSize(13).height(36).backgroundColor('#4B78E6').fontColor(Color.White)
+        Button(runtime.translate('发送')).fontSize(13).height(36).backgroundColor(this.state.accentColor).fontColor(Color.White)
           .enabled(this.state.terminalWritable && this.terminalInput.length > 0)
           .onClick(() => {
             if (this.terminalInput.length > 0) {
@@ -1692,7 +1751,7 @@ struct Index {
           Button('‹').fontSize(24).width(36).height(36).backgroundColor(Color.Transparent)
             .fontColor($r('sys.color.font_secondary')).onClick(() => { this.promptPage = '' })
           Text(runtime.translate('编辑提示词')).fontSize(19).fontWeight(FontWeight.Bold).layoutWeight(1)
-          Button('＋').fontSize(17).width(36).height(36).backgroundColor(Color.Transparent).fontColor('#4B78E6')
+          Button('＋').fontSize(17).width(36).height(36).backgroundColor(Color.Transparent).fontColor(this.state.accentColor)
             .onClick(() => {
               this.promptId = ''; this.promptTitle = ''; this.promptText = ''
               this.showPrompts = false; this.showPromptForm = true
@@ -1709,7 +1768,7 @@ struct Index {
                   Text(runtime.translate(item.builtIn ? '内置' : item.text)).fontSize(12).fontColor($r('sys.color.font_secondary'))
                     .width('100%').maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
                 }.layoutWeight(1).alignItems(HorizontalAlign.Start)
-                Button(runtime.translate('编辑')).fontSize(12).height(32).backgroundColor(Color.Transparent).fontColor('#4B78E6')
+                Button(runtime.translate('编辑')).fontSize(12).height(32).backgroundColor(Color.Transparent).fontColor(this.state.accentColor)
                   .onClick(() => { this.editPrompt(item) })
                 if (!item.builtIn) {
                   Button(runtime.translate('删除')).fontSize(12).height(32).backgroundColor(Color.Transparent).fontColor('#C64B43')
@@ -1736,7 +1795,7 @@ struct Index {
       TextArea({ text: this.promptText, placeholder: runtime.translate('提示词内容') })
         .constraintSize({ minHeight: 110, maxHeight: 220 }).onChange((value: string) => { this.promptText = value })
       Row({ space: 10 }) {
-        Button(runtime.translate('保存')).layoutWeight(1).backgroundColor('#4B78E6')
+        Button(runtime.translate('保存')).layoutWeight(1).backgroundColor(this.state.accentColor)
           .enabled(this.promptTitle.trim().length > 0 && this.promptText.trim().length > 0)
           .onClick(() => {
             runtime.perform('savePrompt', JSON.stringify({
@@ -1899,18 +1958,27 @@ struct Index {
       if (scope !== this.state.sessionKey || !this.state.connected) throw new Error('会话已切换，附件已取消')
       const name: string = decodeURIComponent(uri.split('/').pop() ?? 'attachment')
       if (/\.(jpe?g|png|gif|webp)$/i.test(name)) { await this.readImage(uri, scope); continue }
-      const file = await fs.open(uri, fs.OpenMode.READ_ONLY)
-      try {
-        const size: number = (await fs.stat(file.fd)).size
-        if (size <= 0 || size > 512 * 1024) throw new Error('请选择 512 KiB 以内的代码或文本文件')
-        const buffer: ArrayBuffer = new ArrayBuffer(size)
-        if (await fs.read(file.fd, buffer) !== size) throw new Error('文件读取不完整。')
-        const data: string = new util.Base64Helper().encodeToStringSync(new Uint8Array(buffer))
-        if (scope !== this.state.sessionKey || !this.state.connected) throw new Error('会话已切换，附件已取消')
-        if (!await runtime.perform('uploadFile', JSON.stringify({ name: name, text: data }))) throw new Error(this.state.error || '文件无法添加')
-      } finally { await fs.close(file.fd) }
+      await this.stageFileUri(uri, scope, name)
       }
     } catch (error) { this.imageError = runtime.translate((error as Error).message) }
+  }
+
+  private async stageFileUri(uri: string, scope: string, name: string): Promise<void> {
+    if (scope !== this.state.sessionKey || !this.state.connected) throw new Error('会话已切换，附件已取消')
+    const file = await fs.open(uri, fs.OpenMode.READ_ONLY)
+    try {
+      const size: number = (await fs.stat(file.fd)).size
+      if (size <= 0 || size > this.state.uploadMaxBytes) throw new Error('文件超过当前传输通道的大小限制。')
+      if (!await runtime.perform('stageNativeFile', JSON.stringify({ uri: uri, name: name, size: size }))) throw new Error(this.state.error || '文件无法添加')
+    } finally { await fs.close(file.fd) }
+  }
+  private async pickVideo(): Promise<void> {
+    const scope: string = this.state.sessionKey
+    try {
+      const picker = new photoAccessHelper.PhotoViewPicker()
+      const selected = await picker.select({ MIMEType: photoAccessHelper.PhotoViewMIMETypes.VIDEO_TYPE, maxSelectNumber: 8 })
+      for (const uri of selected.photoUris) await this.stageFileUri(uri, scope, decodeURIComponent(uri.split('/').pop() ?? 'video.mp4'))
+    } catch (error) { this.imageError = (error as Error).message }
   }
 
   private async readImage(uri: string, scope: string): Promise<void> {
@@ -1951,7 +2019,7 @@ struct Index {
       }
       Column({ space: 4 }) {
         Text(this.state.title).width('100%').fontSize(22).fontWeight(FontWeight.Bold).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
-        Text(runtime.translate(this.state.connected || this.state.recovering ? this.state.status : 'HarmonyOS · 0.6.3 移植预览'))
+        Text(runtime.translate(this.state.connected || this.state.recovering ? this.state.status : 'HarmonyOS · 0.6.5 移植预览'))
           .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis }).fontSize(11).fontColor(this.state.connected ? (this.state.recovering ? '#9D6B20' : '#39966C') : $r('sys.color.font_secondary'))
       }.alignItems(HorizontalAlign.Start).layoutWeight(1)
       }.width('100%')
@@ -1960,15 +2028,15 @@ struct Index {
           if (this.state.view === 'chat') {
             if (this.state.children.length > 0) {
               Button(runtime.translate(`子任务 ${this.state.children.length}`)).fontSize(12).height(34).backgroundColor(Color.Transparent)
-                .fontColor('#4B78E6').onClick(() => { this.showChildren = true })
+                .fontColor(this.state.accentColor).onClick(() => { this.showChildren = true })
             }
             Button(runtime.translate('信息')).padding({ left: 8, right: 8 }).fontSize(12).height(34).backgroundColor(Color.Transparent)
               .fontColor($r('sys.color.font_secondary')).onClick(() => { this.showInfo = true; this.invoke('sessionInfo') })
             Button(runtime.translate(this.traceMode ? '对话' : '轨迹')).padding({ left: 8, right: 8 }).fontSize(12).height(34).backgroundColor(Color.Transparent)
-              .fontColor(this.traceMode ? '#4B78E6' : $r('sys.color.font_secondary'))
+              .fontColor(this.traceMode ? this.state.accentColor : $r('sys.color.font_secondary'))
               .onClick(() => { this.traceMode = !this.traceMode; this.traceQuery = ''; this.traceCategory = 'all' })
           }
-          Button(runtime.translate('切换主机')).fontSize(12).height(34).backgroundColor(Color.Transparent).fontColor('#4B78E6').onClick(() => { this.showHostSwitcher = true; this.invoke('refresh') })
+          Button(runtime.translate('切换主机')).fontSize(12).height(34).backgroundColor(Color.Transparent).fontColor(this.state.accentColor).onClick(() => { this.showHostSwitcher = true; this.invoke('refresh') })
           Button('☰').accessibilityText(runtime.translate('工作区与会话')).width(36).padding(0).fontSize(17).height(34).backgroundColor(Color.Transparent).fontColor($r('sys.color.font_secondary'))
             .onClick(() => { this.openDrawer() })
           Button(runtime.translate('断开')).padding({ left: 8, right: 8 }).fontSize(12).height(34).backgroundColor(Color.Transparent).fontColor($r('sys.color.font_secondary'))
@@ -1976,7 +2044,7 @@ struct Index {
         }
       } else if (this.state.canReconnect) {
         // Android offers 重新连接当前对话 once a carrier is gone but the host is known.
-        Button(runtime.translate('重新连接')).fontSize(12).height(34).backgroundColor(Color.Transparent).fontColor('#4B78E6')
+        Button(runtime.translate('重新连接')).fontSize(12).height(34).backgroundColor(Color.Transparent).fontColor(this.state.accentColor)
           .onClick(() => { this.invoke('reconnect') })
         Button('⚙').fontSize(16).height(34).backgroundColor(Color.Transparent).fontColor($r('sys.color.font_secondary'))
           .onClick(() => { this.showSettings = true })
@@ -1999,7 +2067,7 @@ struct Index {
           TextInput({ text: this.server, placeholder: runtime.translate('服务器 HTTPS 地址') }).onChange((value: string) => { this.server = value })
           TextInput({ text: this.email, placeholder: runtime.translate('邮箱') }).type(InputType.Email).onChange((value: string) => { this.email = value })
           TextInput({ text: this.password, placeholder: runtime.translate('密码') }).type(InputType.Password).onChange((value: string) => { this.password = value })
-          Button(runtime.translate('登录并注册本机')).width('100%').height(48).backgroundColor('#4B78E6')
+          Button(runtime.translate('登录并注册本机')).width('100%').height(48).backgroundColor(this.state.accentColor)
             .enabled(!this.state.busy && this.email.length > 0 && this.password.length > 0)
             .onClick(() => {
               const password: string = this.password
@@ -2049,7 +2117,7 @@ struct Index {
           .fontSize(13).fontColor('#C64B43').textAlign(TextAlign.Center)
       }
       Button(runtime.translate(this.state.candidate.trusted ? '连接主机' : '指纹一致，信任并连接'))
-        .backgroundColor('#4B78E6').enabled(!this.state.busy)
+        .backgroundColor(this.state.accentColor).enabled(!this.state.busy)
         .onClick(() => { this.invoke('trustHost', this.state.candidate.id) })
       Row({ space: 10 }) {
         Button(runtime.translate('解除这台主机的绑定')).layoutWeight(1).backgroundColor(Color.Transparent).fontColor('#C64B43')
@@ -2134,7 +2202,7 @@ struct Index {
           Button('✕').accessibilityText(runtime.translate('关闭')).fontSize(16).width(34).height(34).padding(0).flexShrink(0).backgroundColor(Color.Transparent)
             .fontColor($r('sys.color.font_secondary')).onClick(() => { this.closeDrawer() })
         }.width('100%').padding({ left: 14, right: 8, top: 14 })
-        Button(runtime.translate('＋ 新建对话')).fontSize(15).height(44).width('100%').backgroundColor('#4B78E6')
+        Button(runtime.translate('＋ 新建对话')).fontSize(15).height(44).width('100%').backgroundColor(this.state.accentColor)
           .enabled(!this.state.busy && this.state.connected)
           .onClick(() => { this.closeDrawer(); this.invoke('newSession') })
         // Android pins 插件 and 自动化任务 between the new-session button and the backend tabs.
@@ -2172,10 +2240,10 @@ struct Index {
         Row({ space: 4 }) {
           Text(runtime.translate('工作区')).fontSize(15).fontWeight(FontWeight.Medium).layoutWeight(1)
           Button('🔍').fontSize(14).width(32).height(32).backgroundColor(Color.Transparent)
-            .fontColor(this.drawerSearch ? '#4B78E6' : $r('sys.color.font_secondary'))
+            .fontColor(this.drawerSearch ? this.state.accentColor : $r('sys.color.font_secondary'))
             .onClick(() => { this.drawerSearch = !this.drawerSearch })
           Button('⚙').fontSize(14).width(32).height(32).backgroundColor(Color.Transparent)
-            .fontColor(this.drawerOptions ? '#4B78E6' : $r('sys.color.font_secondary'))
+            .fontColor(this.drawerOptions ? this.state.accentColor : $r('sys.color.font_secondary'))
             .onClick(() => { this.drawerOptions = !this.drawerOptions })
         }.width('100%').padding({ left: 14, right: 8 })
         if (this.drawerSearch) {
@@ -2205,7 +2273,7 @@ struct Index {
             }.onClick(() => { this.send('toggleGroup', { id: row.id }) })
           } else if (row.kind === 'more') {
             ListItem() {
-              Text(row.name).fontSize(13).fontColor('#4B78E6').width('100%').padding(12).textAlign(TextAlign.Center)
+              Text(row.name).fontSize(13).fontColor(this.state.accentColor).width('100%').padding(12).textAlign(TextAlign.Center)
             }.onClick(() => { this.send('showMore', { id: row.target }) })
           } else {
             ListItem() {
@@ -2216,7 +2284,7 @@ struct Index {
                   Text(`${row.description}${row.meta.length > 0 ? ' · ' + row.meta : ''}`)
                     .width('100%').fontSize(11).fontColor($r('sys.color.font_secondary')).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
                 }.layoutWeight(1).alignItems(HorizontalAlign.Start)
-                if (row.selected) { Text(runtime.translate('当前')).fontSize(11).fontColor('#4B78E6') }
+                if (row.selected) { Text(runtime.translate('当前')).fontSize(11).fontColor(this.state.accentColor) }
                 Button(runtime.translate('归档')).fontSize(12).height(30).backgroundColor(Color.Transparent)
                   .fontColor($r('sys.color.font_secondary'))
                   .onClick(() => { this.send('archive', { id: row.id }) })
@@ -2320,7 +2388,7 @@ struct Index {
                 if (this.state.view === 'workspaces') {
                   Text(`${row.count}`).fontSize(12).flexShrink(0).fontColor($r('sys.color.font_secondary'))
                   Button('+').width(34).height(38).padding(0).flexShrink(0).backgroundColor(Color.Transparent)
-                    .fontColor('#4B78E6').accessibilityText(runtime.translate('在此工作区新建对话')).enabled(!this.state.busy)
+                    .fontColor(this.state.accentColor).accessibilityText(runtime.translate('在此工作区新建对话')).enabled(!this.state.busy)
                     .onClick(() => { this.send('newSessionIn', { id: row.id }) })
                   // Fixed icon hit areas must not inherit the Button text padding.
                   Button(row.favorite ? '★' : '☆').accessibilityText(runtime.translate(row.favorite ? '取消收藏' : '收藏工作区')).fontSize(18).width(38).height(38).padding(0).flexShrink(0)
@@ -2350,7 +2418,7 @@ struct Index {
           }
         }.padding({ left: 16, right: 16 }).layoutWeight(1).width('100%')
         if (this.state.view === 'sessions') {
-          Button(runtime.translate('＋ 新建对话')).backgroundColor('#4B78E6').enabled(!this.state.busy && this.state.connected)
+          Button(runtime.translate('＋ 新建对话')).backgroundColor(this.state.accentColor).enabled(!this.state.busy && this.state.connected)
             .onClick(() => { this.invoke('newSession') }).margin({ bottom: 16 })
         } else {
           Row({ space: 8 }) {
@@ -2369,7 +2437,7 @@ struct Index {
     Column() {
       if (this.state.models.length > 0) {
         Button(runtime.translate(this.state.selectedModel || '选择模型')).fontSize(12).height(32)
-          .backgroundColor(Color.Transparent).fontColor('#4B78E6').enabled(!this.state.running && !this.state.busy)
+          .backgroundColor(Color.Transparent).fontColor(this.state.accentColor).enabled(!this.state.running && !this.state.busy)
           .onClick(() => { this.showModels = !this.showModels })
       }
       if (this.showModels) {
@@ -2397,7 +2465,7 @@ struct Index {
               Text(row.title).fontSize(13).width('100%')
               if (row.view && row.view.length > 0) LocalSurface({ kind: 'bot', payload: row.view, onAction: async (): Promise<boolean> => false })
               else LocalSurface({ kind: 'markdown', scope: this.state.sessionKey, dark: (getContext(this) as common.UIAbilityContext).config.colorMode === 0,
-                payload: JSON.stringify({ text: row.text, density: this.state.typographyDensity, dark: (getContext(this) as common.UIAbilityContext).config.colorMode === 0 }),
+                payload: JSON.stringify({ text: row.text, density: this.state.typographyDensity, appearance: JSON.parse(this.state.chatAppearance), dark: (getContext(this) as common.UIAbilityContext).config.colorMode === 0 }),
                 onAction: async (raw: string): Promise<boolean> => {
                   const event: SurfaceEvent = JSON.parse(raw) as SurfaceEvent
                   return event.type === 'link' ? runtime.perform('openLink', JSON.stringify({ text: event.url })) : false
@@ -2410,7 +2478,7 @@ struct Index {
             if (this.traceMode) {
               TraceEntry({ row: row, label: this.categoryLabel(row.category), onFork: this.forkRow, onFeedback: this.rateRow })
             } else {
-              TimelineCard({ row: row, scope: this.state.sessionKey, dark: (getContext(this) as common.UIAbilityContext).config.colorMode === 0, density: this.state.typographyDensity, onFork: this.forkRow, onFeedback: this.rateRow,
+              TimelineCard({ row: row, scope: this.state.sessionKey, dark: (getContext(this) as common.UIAbilityContext).config.colorMode === 0, density: this.state.typographyDensity, appearance: this.state.chatAppearance, accent: this.state.accentColor, onFork: this.forkRow, onFeedback: this.rateRow,
                 onApproval: (id: string, decision: string) => {
                   runtime.perform('approval', JSON.stringify({ id: id, decision: decision })).catch(() => {})
                 }, onQuestion: (id: string, answers: QuestionAnswer[]) => {
@@ -2449,7 +2517,7 @@ struct Index {
           Text(runtime.translate('送达结果未确认：' + row.error)).fontSize(12).fontColor('#C64B43').width('100%')
           Row({ space: 12 }) {
             Button(runtime.translate('重新发送')).enabled(this.state.connected && !this.state.busy).onClick(() => {
-              promptAction.showDialog({ title: '确认重新发送', message: '主机可能已收到原消息。重新发送可能产生重复任务，是否继续？', buttons: [{ text: '取消', color: '#888888' }, { text: '重新发送', color: '#4B78E6' }] }).then((result: promptAction.ShowDialogSuccessResponse) => { if (result.index === 1) this.send('retrySend', { id: row.id, enabled: true }) })
+              promptAction.showDialog({ title: '确认重新发送', message: '主机可能已收到原消息。重新发送可能产生重复任务，是否继续？', buttons: [{ text: '取消', color: '#888888' }, { text: '重新发送', color: this.state.accentColor }] }).then((result: promptAction.ShowDialogSuccessResponse) => { if (result.index === 1) this.send('retrySend', { id: row.id, enabled: true }) })
             })
             Button(runtime.translate('移除')).onClick(() => { this.send('dismissSend', { id: row.id }) })
           }
@@ -2459,7 +2527,7 @@ struct Index {
         if (!this.traceMode && this.state.rows.length === 0 && this.state.botExtras.length === 0 && !this.state.busy) {
           ListItem() {
             Column({ space: 10 }) {
-              Text(runtime.translate('预览版')).fontSize(11).fontColor('#4B78E6').padding({ left: 10, right: 10, top: 4, bottom: 4 })
+              Text(runtime.translate('预览版')).fontSize(11).fontColor(this.state.accentColor).padding({ left: 10, right: 10, top: 4, bottom: 4 })
                 .backgroundColor($r('sys.color.comp_background_tertiary')).borderRadius(10)
               Text(this.welcomeTitle()).fontSize(20).fontWeight(FontWeight.Bold)
               Text(this.welcomeBody()).fontSize(14).fontColor($r('sys.color.font_secondary'))
@@ -2495,7 +2563,15 @@ struct Index {
           Button(runtime.translate('旁问 /btw')).enabled(this.state.botReadOnly.length === 0).onClick(() => { this.draft = '/btw ' + this.draft })
         }.width('100%')
       }
-      if (this.state.activity.rows.length > 0 || this.state.activity.jobs.length > 0) {
+      if (this.state.activityDockMode === 'cards') {
+        Column({space:8}) {
+          ForEach(this.state.activity.rows.slice(0,6), (row: ActivityRow) => {
+            Text(row.title + ' · ' + row.status).fontSize(13).width('100%').padding(10).backgroundColor($r('sys.color.comp_background_tertiary')).borderRadius(10).onClick(() => {this.alignmentPanel='activity'})
+          }, (row: ActivityRow) => row.id+'|'+row.status)
+          Button(runtime.translate('全部活动')).onClick(() => {this.alignmentPanel='activity'})
+        }.width('100%').padding({left:20,right:20})
+      }
+      if (this.state.activityDockMode === 'compact' && (this.state.activity.rows.length > 0 || this.state.activity.jobs.length > 0)) {
         Scroll() {
           Row({ space: 8 }) {
             ForEach(['todos', 'goal', 'team', 'subagents'], (category: string) => {
@@ -2507,6 +2583,12 @@ struct Index {
             if (this.state.activity.jobs.length > 0) Button(runtime.translate('后台任务') + ' ' + this.state.activity.jobs.filter((job: JobRow) => job.status === 'running').length).fontSize(11).height(32).onClick(() => { this.alignmentPanel = 'activity' })
           }.padding({ left: 16, right: 16 })
         }.width('100%').scrollable(ScrollDirection.Horizontal).scrollBar(BarState.Off)
+      }
+      if (this.state.compactionStatus.length > 0) {
+        Row({space:8}) {
+          Text(this.state.compactionStatus).fontSize(12).layoutWeight(1)
+          if (this.state.compactionCancellable) Button(runtime.translate('取消压缩')).onClick(() => { this.send('cancelCompaction', {}) })
+        }.padding({left:20,right:20}).width('100%')
       }
       if (this.state.running) {
         Row({ space: 12 }) {
@@ -2528,6 +2610,15 @@ struct Index {
           Button(runtime.translate('移除')).onClick(() => { this.promptImages = this.promptImages.filter((row: PromptAttachment, at: number) => at !== index); this.image = this.promptImages[0]?.data ?? '' })
         }.padding({ left: 24, right: 24 }).width('100%')
       }, (image: PromptAttachment, index: number) => String(index) + image.data.slice(0,32))
+      if (this.state.botTarget.length > 0 && this.draft.lastIndexOf('@') >= 0 && !this.draft.slice(this.draft.lastIndexOf('@')).includes(' ')) {
+        Scroll() {
+          Row({space:8}) {
+            ForEach(this.state.botDefinitions.filter((bot:BotDefinition) => bot.name.toLowerCase().startsWith(this.draft.slice(this.draft.lastIndexOf('@')+1).toLowerCase())), (bot:BotDefinition) => {
+              Button('@'+bot.name).fontSize(12).onClick(() => { this.draft=this.draft.slice(0,this.draft.lastIndexOf('@'))+'@'+bot.name+' '; this.send('saveDraft',{id:this.state.sessionKey,text:this.draft}) })
+            }, (bot:BotDefinition)=>bot.id)
+          }
+        }.scrollable(ScrollDirection.Horizontal).width('100%')
+      }
       if (this.imageError) { Text(this.imageError).fontSize(12).fontColor('#C64B43').padding(8) }
       if (this.state.queue.length > 0) {
         Column({ space: 6 }) {
@@ -2537,7 +2628,7 @@ struct Index {
               Text(item.preview).fontSize(13).layoutWeight(1).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
               Text(runtime.translate('等待执行')).fontSize(11).fontColor($r('sys.color.font_secondary'))
               if (item.id.length > 0) {
-                Button(runtime.translate('立即发送')).fontSize(12).height(30).backgroundColor(Color.Transparent).fontColor('#4B78E6')
+                Button(runtime.translate('立即发送')).fontSize(12).height(30).backgroundColor(Color.Transparent).fontColor(this.state.accentColor)
                   .onClick(() => { this.send('queueAction', { id: item.id, mode: 'steer' }) })
                 Button(runtime.translate('移出队列')).fontSize(12).height(30).backgroundColor(Color.Transparent).fontColor($r('sys.color.font_secondary'))
                   .onClick(() => { this.send('queueAction', { id: item.id, mode: 'remove' }) })
@@ -2551,11 +2642,15 @@ struct Index {
         TextArea({ text: this.draft, placeholder: runtime.translate('向远程会话发送消息…') })
           .height(this.expandedComposer ? 220 : 72).width('100%').onChange((value: string) => { this.draft = value; runtime.perform('saveDraft', JSON.stringify({ id: this.lastSession, text: value })).catch(() => {}) })
         Row({ space: 10 }) {
+        if (this.state.uploadProgress.length > 0) {
+          Text(this.state.uploadProgress).fontSize(12).layoutWeight(1).maxLines(2)
+          Button(runtime.translate('取消上传')).onClick(() => { this.send('cancelUpload', {}) })
+        }
         Button('＋').width(36).height(36).onClick(() => { this.openMore() }).enabled(!this.state.busy && this.state.connected)
-        Button(runtime.translate('快捷提示词')).fontSize(12).height(36).backgroundColor(Color.Transparent).fontColor('#4B78E6')
+        Button(runtime.translate('快捷提示词')).fontSize(12).height(36).backgroundColor(Color.Transparent).fontColor(this.state.accentColor)
           .enabled(!this.state.busy && this.state.connected).onClick(() => { this.openPrompts() })
         Blank()
-        Button(runtime.translate('发送')).height(44).backgroundColor('#4B78E6')
+        Button(runtime.translate('发送')).height(44).backgroundColor(this.state.accentColor)
           .enabled(this.state.connected && !this.state.busy && (this.state.botTarget.length === 0 || this.state.botReadOnly.length === 0) && (this.draft.trim().length > 0 || this.image.length > 0 || this.state.stagedFiles.length > 0))
           .onClick(() => {
             const text: string = this.draft
@@ -2590,7 +2685,7 @@ struct Index {
         Text(this.state.error || this.state.notice).fontSize(13).fontColor(this.state.error ? '#C64B43' : '#9D6B20')
           .width('100%').padding(12).backgroundColor($r('sys.color.comp_background_tertiary'))
       }
-      if (this.state.busy) { Progress({ value: 35, total: 100, type: ProgressType.Linear }).width('100%').color('#4B78E6') }
+      if (this.state.busy) { Progress({ value: 35, total: 100, type: ProgressType.Linear }).width('100%').color(this.state.accentColor) }
         if (this.state.view === 'login') { this.login() }
         else if (this.state.view === 'trust') { this.trust() }
         else if (this.state.view === 'chat') { this.chat() }

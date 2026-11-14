@@ -5,6 +5,7 @@ import type { SettingsForms } from '@deepseek-ai/dsh-settings'
 import { ClientModeRuntime, type HostConnectionHandle } from './client-runtime.js'
 import {
   Config,
+  entryConfigSchema,
   resolveConfig,
   type Config as ConfigShape,
   type ConfigInput,
@@ -13,8 +14,16 @@ import {
 } from './config.js'
 import { PluginControlRuntime, type PluginSettingsBinding } from './control-runtime.js'
 import type { HostWebServerLike } from './control-route.js'
-import { IdentityStore, prepareDefaultIdentityDirectory, serverStorageDirectory } from './identity-store.js'
+import {
+  IdentityStore,
+  prepareDefaultIdentityDirectory,
+  resetDefaultIdentityRoles,
+  serverStorageDirectory,
+} from './identity-store.js'
+import { basename, dirname } from 'node:path'
+import { HostLogStore, resolveHostLogPath } from './host-log-store.js'
 import { SafeLogger } from './logging.js'
+import { safeStartupError } from './safe-error.js'
 import { HostPluginRuntime } from './service.js'
 import type { ScheduleCreateService } from './harness-remote-bridge.js'
 import { ClientServerApi } from './server-api.js'
@@ -27,6 +36,8 @@ import { createPluginRouteDispatcher, type PluginRouteConnectionLike } from './p
 import { installRemoteDiscoveryTools } from './remote-tools.js'
 import { runHmrSafe, type HmrContextLike } from './hmr-safe-settings.js'
 import { PluginUpdateChecker } from './update-check.js'
+import { LocalPluginUpgrade, type PluginManagerUpdate } from './plugin-self-update.js'
+import { assertRemoteEventSource } from './tui-event-source.js'
 import {
   createOwnerPeerFactory,
   ownerPeerConstructor,
@@ -115,18 +126,22 @@ export function apply(ctx: Context, entry: EntryConfig | ConfigShape | undefined
     if (isLegacySettingsProvider(settings)) return
     settingsContext.effect(() => settings.configure({ auto: false }, ctx.fiber))
   })
-  // This release activates only the browser/Desktop Host surface: one official
-  // Harness `connection` service is required before the runtime starts. dsh-TUI
-  // support is deferred to a later release and no terminal-specific services
-  // are resolved here.
+  // The default entry uses the browser/Desktop Host connection service.
+  // The separate dsh-TUI entry starts through applyTuiHost.
   const activateWhenCarrierReady = async (runtimeContext: Context): Promise<void> => {
-    const identityDirectory = await prepareDefaultIdentityDirectory()
     const gateway = runtimeContext.get('typertGateway') as TypertGatewayLike
     const connection = runtimeContext.get('connection') as HostConnectionHandle | undefined
     const webServer = runtimeContext.get('webServer') as HostWebServerLike | undefined
     let disposePendingControl: (() => Promise<void>) | undefined
-    const installPendingControl = (): void => {
+    const installPendingControl = async (): Promise<void> => {
       if (connection === undefined || disposePendingControl !== undefined) return
+      let identityDirectory = new IdentityStore().directory
+      let storageError: unknown
+      try {
+        identityDirectory = await prepareDefaultIdentityDirectory()
+      } catch (error) {
+        storageError = error
+      }
       disposePendingControl = runtimeContext.effect(() => {
         const control = new PluginControlRuntime(
           resolveConfig(readConfig()),
@@ -134,7 +149,13 @@ export function apply(ctx: Context, entry: EntryConfig | ConfigShape | undefined
           undefined,
           undefined,
           undefined,
+          undefined,
+          undefined,
+          true,
         )
+        if (storageError !== undefined) {
+          control.setStartupFailure(storageError, { storageAvailable: false })
+        }
         return control.register(connection, webServer)
       }, 'ds-harness-remote pending control')
     }
@@ -146,16 +167,33 @@ export function apply(ctx: Context, entry: EntryConfig | ConfigShape | undefined
     if (new TypertGatewaySwitch(gateway).supportsCarrier()) {
       return startActiveRuntime(runtimeContext)
     }
-    installPendingControl()
+    await installPendingControl()
   }
 
   ctx.inject(['settings', 'connection', 'typertGateway'], activateWhenCarrierReady)
+}
+
+/** Start the shared Host runtime from the separate dsh-TUI package. */
+export function applyTuiHost(
+  ctx: Context,
+  entry: EntryConfig | ConfigShape | undefined,
+): void {
+  const readConfig = (): ConfigInput => readEntryConfig(entry)
+  const entryId = locateEntryId(ctx)
+  ctx.inject(['settings', 'typertGateway'], async runtimeContext => {
+    const gateway = runtimeContext.get('typertGateway') as TypertGatewayLike
+    if (!new TypertGatewaySwitch(gateway).supportsCarrier()) {
+      throw new Error('dsh-TUI Remote requires the official Typert Gateway carrier.')
+    }
+    await activate(runtimeContext, readConfig, entryId, true)
+  })
 }
 
 async function activate(
   ctx: Context,
   readConfig: () => ConfigInput,
   entryId: string,
+  requireRemoteEvents = false,
 ): Promise<void> {
   const settings = ctx.get('settings') as SettingsServiceLike | undefined
   const settingsBinding = await createSettingsBinding(ctx, settings, readConfig, entryId)
@@ -164,26 +202,67 @@ async function activate(
   // Reads resolve through the binding so the ≤0.1.6 scope's user layer (not the
   // raw composition seed) is honored; the rc.1 binding reads the live Config.
   const config: ResolvedConfig = resolveConfig(settingsBinding?.get() ?? readConfig())
-  const defaultIdentityDirectory = await prepareDefaultIdentityDirectory()
-  if (!config.enabled) {
-    if (connection !== undefined) {
-      const controlRuntime = new PluginControlRuntime(config, defaultIdentityDirectory, settingsBinding, undefined, undefined)
-      ctx.effect(() => controlRuntime.register(connection, webServer), 'ds-harness-remote disabled control')
-    }
-    return
-  }
+  const logStore = new HostLogStore({ filePath: resolveHostLogPath({ profile: resolveLogProfileName(ctx) }) })
   // Mirrors SafeLogger output to the process stdout/stderr as well as the DSH
   // logger: the web process stdout is captured by the Desktop shell into
   // desktop.log, so remote RPC/transport diagnostics stay greppable there.
   const logger = new SafeLogger({
-    debug: message => { ctx.logger.debug(message); console.debug(message) },
-    info: message => { ctx.logger.info(message); console.info(message) },
-    warn: message => { ctx.logger.warn(message); console.warn(message) },
-    error: message => { ctx.logger.error(message); console.error(message) },
-  }, config.logLevel)
+    debug: message => { logStore.record('debug', message); ctx.logger.debug(message); console.debug(message) },
+    info: message => { logStore.record('info', message); ctx.logger.info(message); console.info(message) },
+    warn: message => { logStore.record('warn', message); ctx.logger.warn(message); console.warn(message) },
+    error: message => { logStore.record('error', message); ctx.logger.error(message); console.error(message) },
+  }, () => resolveConfig(settingsBinding?.get() ?? readConfig()).logLevel)
+  let defaultIdentityDirectory = new IdentityStore().directory
+  let initialStorageError: unknown
+  try {
+    defaultIdentityDirectory = await prepareDefaultIdentityDirectory()
+  } catch (error) {
+    initialStorageError = error
+  }
+  if (!config.enabled) {
+    if (connection !== undefined) {
+      const controlRuntime = new PluginControlRuntime(
+        config,
+        defaultIdentityDirectory,
+        settingsBinding,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        true,
+        logStore,
+      )
+      if (initialStorageError !== undefined) {
+        logger.error('Remote plugin startup failed', safeStartupError(initialStorageError))
+        controlRuntime.setStartupFailure(initialStorageError, { storageAvailable: false })
+      }
+      ctx.effect(() => {
+        const dispose = controlRuntime.register(connection, webServer)
+        return async () => {
+          await dispose()
+          await logStore.flush()
+        }
+      }, 'ds-harness-remote disabled control')
+    }
+    return
+  }
   // Startup and daily npm dist-tags lookup backing the client update notice.
   // Lives for the whole activation so Server switches keep its snapshot.
   const updateChecker = new PluginUpdateChecker(logger)
+  // Harness 0.2.2 updates a registry-installed third-party bundle in place.
+  // The manager is a Host boot service, so it keeps running after this plugin
+  // is removed and replaced. GitHub and path installs are left on the releases link.
+  const pluginUpgrade = new LocalPluginUpgrade(
+    updateChecker,
+    () => readPluginManager(ctx),
+    listener => {
+      // The manager emits on its own context. Desktop puts that service on the
+      // profile root; a nested context with its own bus still needs to hear it.
+      const buses = ctx.events === ctx.root.events ? [ctx.root.events] : [ctx.root.events, ctx.events]
+      const dispose = buses.map(events => events.on('plugin-manager/update-state', listener, { global: true }))
+      return () => { for (const stop of dispose) stop() }
+    },
+  )
   // The official Typert gateway (`typertGateway` from dsh-api-gateway) is the
   // dispatch path behind `/api/commands/*` on the host. It is an explicit
   // activation dependency so a peer bridge never silently omits commands.
@@ -222,6 +301,7 @@ async function activate(
       },
     }
   }
+  if (requireRemoteEvents) await assertRemoteEventSource(localTypertGateway)
   // The Host `subprocess` service owns PTY allocation, containment, and process
   // termination for remote terminals. Profiles without it fall back to the plain
   // pipe spawner inside the bridge.
@@ -239,6 +319,7 @@ async function activate(
       directory: config.serverUrl === undefined
         ? defaultIdentityDirectory
         : serverStorageDirectory(defaultIdentityDirectory, config.serverUrl, 'host'),
+      role: 'host',
     })
     const runtime = new HostPluginRuntime(
       config,
@@ -259,11 +340,12 @@ async function activate(
     if (config.serverUrl !== undefined && connection !== undefined) {
       const clientIdentities = new IdentityStore({
         directory: serverStorageDirectory(defaultIdentityDirectory, config.serverUrl, 'client'),
+        role: 'client',
       })
       clientRuntime = new ClientModeRuntime(
         config,
         clientIdentities,
-        new ClientServerApi(config.serverUrl, new ServerCredentialStore(clientIdentities.directory)),
+        new ClientServerApi(config.serverUrl, new ServerCredentialStore(clientIdentities.directory), fetch, config.httpServerAllowlist),
         nativeTypertGateway,
         logger,
         runtime,
@@ -272,20 +354,54 @@ async function activate(
 
     return { runtime, clientRuntime }
   }
-  let { runtime, clientRuntime } = createRuntimes(config)
+  let runtime: HostPluginRuntime | undefined
+  let clientRuntime: ClientModeRuntime | undefined
+  let hostServiceProvided = false
+  let clientServiceProvided = false
+  let clientActive = false
+  if (initialStorageError === undefined) {
+    ;({ runtime, clientRuntime } = createRuntimes(config))
+  }
   let closed = false
-  let clientServiceProvided = clientRuntime !== undefined
   let startup: Promise<void> | undefined
   let replacement: Promise<{ client: ClientModeRuntime | undefined; host: HostPluginRuntime }> | undefined
+  const syncOptionalService = (
+    serviceName: 'dshRemote' | 'dshRemoteClient',
+    value: HostPluginRuntime | ClientModeRuntime,
+    owned: boolean,
+  ) => {
+    try {
+      if (serviceName === 'dshRemote') {
+        if (owned) ctx.dshRemote = value as HostPluginRuntime
+        else ctx.provide('dshRemote', value as HostPluginRuntime)
+      } else if (owned) {
+        ctx.dshRemoteClient = value as ClientModeRuntime
+      } else {
+        ctx.provide('dshRemoteClient', value as ClientModeRuntime)
+      }
+      return true
+    } catch {
+      logger.warn('failed to provide remote service', {
+        service: serviceName,
+        code: 'SERVICE_PROVIDE_CONFLICT',
+      })
+      return false
+    }
+  }
   const replaceServer = (next: ResolvedConfig) => {
+    const previousReplacement = replacement
     const operation = async () => {
-      await startup
+      await startup?.catch(() => undefined)
+      await previousReplacement?.catch(() => undefined)
       if (closed) throw new Error('Remote plugin is closed')
+      clientActive = false
       // Stop both authorities before loading identities scoped to another Server.
-      const shutdown = await Promise.allSettled([clientRuntime?.close(), runtime.close()])
+      const shutdown = await Promise.allSettled([clientRuntime?.close(), runtime?.close()])
       const failure = shutdown.find(result => result.status === 'rejected')
       if (failure?.status === 'rejected') throw failure.reason
       if (closed) throw new Error('Remote plugin is closed')
+      defaultIdentityDirectory = await prepareDefaultIdentityDirectory()
+      controlRuntime?.setIdentityDirectory(defaultIdentityDirectory)
       const fresh = createRuntimes(next)
       try {
         await fresh.runtime.start()
@@ -297,14 +413,13 @@ async function activate(
       }
       runtime = fresh.runtime
       clientRuntime = fresh.clientRuntime
-      ctx.dshRemote = runtime
+      clientActive = clientRuntime !== undefined
+      controlRuntime?.clearStartupFailure()
+      hostServiceProvided = syncOptionalService('dshRemote', runtime, hostServiceProvided)
       if (clientRuntime !== undefined) {
-        if (clientServiceProvided) ctx.dshRemoteClient = clientRuntime
-        else {
-          ctx.provide('dshRemoteClient', clientRuntime)
-          clientServiceProvided = true
-        }
+        clientServiceProvided = syncOptionalService('dshRemoteClient', clientRuntime, clientServiceProvided)
       }
+      if (connection !== undefined) updateChecker.start()
       return { client: clientRuntime, host: runtime }
     }
     replacement = operation()
@@ -313,46 +428,70 @@ async function activate(
 
   const controlRuntime = connection === undefined
     ? undefined
-    : new PluginControlRuntime(config, defaultIdentityDirectory, settingsBinding, clientRuntime, runtime, replaceServer, updateChecker)
+    : new PluginControlRuntime(
+        config,
+        defaultIdentityDirectory,
+        settingsBinding,
+        clientRuntime,
+        runtime,
+        replaceServer,
+        pluginUpgrade,
+        true,
+        logStore,
+      )
+  if (initialStorageError !== undefined) {
+    controlRuntime?.setStartupFailure(initialStorageError, { storageAvailable: false })
+  }
 
-  ctx.provide('dshRemote', runtime)
-  if (clientRuntime !== undefined) ctx.provide('dshRemoteClient', clientRuntime)
+  if (runtime !== undefined) {
+    hostServiceProvided = syncOptionalService('dshRemote', runtime, hostServiceProvided)
+  }
+  if (clientRuntime !== undefined) {
+    clientServiceProvided = syncOptionalService('dshRemoteClient', clientRuntime, clientServiceProvided)
+  }
   await disableLegacyLoaderEntries(ctx, logger)
   await ctx.effect(async () => {
     const disposeControl = controlRuntime?.register(connection!, webServer)
-    try {
-      startup = (async () => {
-        await runtime.start()
-        if (clientRuntime !== undefined) {
-          await clientRuntime.start()
-        } else {
-          logger.warn('client remote mode is unavailable', {
-            serverConfigured: config.serverUrl !== undefined,
-            remoteGatewayAvailable: localTypertGateway.supportsCarrier,
-            connectionAvailable: connection !== undefined,
-          })
-        }
-      })()
-      await startup
-      // Only the browser/Desktop connection surfaces the update notice, so a
-      // Host composition without it skips the registry calls.
-      if (connection !== undefined) updateChecker.start()
-    } catch (error) {
-      await disposeControl?.()
-      await clientRuntime?.close()
-      await runtime.close()
-      throw error
+    if (initialStorageError !== undefined) {
+      logger.error('Remote plugin startup failed', safeStartupError(initialStorageError))
+    } else {
+      try {
+        startup = (async () => {
+          await runtime!.start()
+          if (clientRuntime !== undefined) {
+            await clientRuntime.start()
+            clientActive = true
+          } else {
+            logger.warn('client remote mode is unavailable', {
+              serverConfigured: config.serverUrl !== undefined,
+              remoteGatewayAvailable: localTypertGateway.supportsCarrier,
+              connectionAvailable: connection !== undefined,
+            })
+          }
+        })()
+        await startup
+        // Only the browser/Desktop connection surfaces the update notice, so a
+        // Host composition without it skips the registry calls.
+        if (connection !== undefined) updateChecker.start()
+      } catch (error) {
+        clientActive = false
+        logger.error('Remote plugin startup failed', safeStartupError(error))
+        controlRuntime?.setStartupFailure(error)
+        await Promise.allSettled([clientRuntime?.close(), runtime?.close()])
+      }
     }
     return async () => {
       closed = true
+      clientActive = false
       updateChecker.stop()
       await replacement?.catch(() => undefined)
       await disposeControl?.()
       await clientRuntime?.close()
-      await runtime.close()
+      await runtime?.close()
+      await logStore.flush()
     }
   }, 'ds-harness-remote lifecycle')
-  if (config.remoteTools?.enabled) installRemoteDiscoveryTools(ctx, () => closed ? undefined : clientRuntime)
+  if (config.remoteTools?.enabled) installRemoteDiscoveryTools(ctx, () => closed || !clientActive ? undefined : clientRuntime)
 }
 
 /**
@@ -360,6 +499,19 @@ async function activate(
  * {@link EntryConfig} (a live `Volatile` reference); a direct `ctx.plugin()`
  * caller passes the plain composition object instead.
  */
+function resolveLogProfileName(ctx: Context): string | undefined {
+  const envProfile = process.env.DSH_PROFILE?.trim()
+  if (envProfile) return envProfile
+  const baseDir = (ctx.root as { baseDir?: unknown } | undefined)?.baseDir
+  if (typeof baseDir === 'string' && baseDir.trim().length > 0) {
+    const trimmed = baseDir.trim()
+    if (basename(dirname(trimmed)) === 'profiles') {
+      const segment = basename(trimmed)
+      if (segment.length > 0) return segment
+    }
+  }
+  return undefined
+}
 function readEntryConfig(entry: EntryConfig | ConfigShape | undefined): ConfigInput {
   if (entry === undefined) return {}
   return isEntryConfig(entry) ? entry.get() : entry
@@ -368,6 +520,21 @@ function readEntryConfig(entry: EntryConfig | ConfigShape | undefined): ConfigIn
 /** Whether a config value is the Loader's live volatile reference. */
 function isEntryConfig(value: EntryConfig | ConfigShape): value is EntryConfig {
   return typeof (value as { get?: unknown }).get === 'function'
+}
+
+/**
+ * The official plugin manager lives on the profile context. A plugin-scoped
+ * lookup misses it when the service is isolated to the root.
+ */
+function readPluginManager(ctx: Context): PluginManagerUpdate | undefined {
+  const candidate = ctx.get('pluginManager', false) ?? ctx.root.get('pluginManager', false)
+  if (
+    typeof candidate !== 'object'
+    || candidate === null
+    || typeof (candidate as { listBundles?: unknown }).listBundles !== 'function'
+    || typeof (candidate as { updateBundle?: unknown }).updateBundle !== 'function'
+  ) return undefined
+  return candidate as PluginManagerUpdate
 }
 
 /** Entry id whose live Config backs this plugin instance's settings writes. */
@@ -414,8 +581,24 @@ async function createSettingsBinding(
       replace: section => runHmrSafe<void>(async () => { await settings.replace(entryId, section) }, hmr),
     }
   }
-  const scope = settings.register(pluginSettingsNamespace, Config, {
-    base: readConfig(),
+  // `Config` is the volatile variant of the entry schema (the DSH 0.1.7-rc.1+
+  // live entry reference). A registry that still exposes `register()` calls the
+  // schema directly — `schema(mergeLayers(base, user))` — and a volatile schema
+  // resolves to a `{ get }` accessor instead of a plain Config, so the `validate`
+  // step below rejects activation on every host that has this registry
+  // (observed on DSH 0.2.1-rc.3 with `unrecognized key: "get"`).
+  //
+  // That registry also returns `mergeLayers(base, user)` unchanged while no
+  // section is stored (`user === undefined`), so the entry Config never reaches
+  // the schema on a fresh install: `serverUrl`, `loopback.ports` and `acp` all
+  // disappear. Resolve it inside the registered schema instead of merging on
+  // every read, so a stored section — including an explicit reset — keeps the
+  // registry's own precedence.
+  const base = readConfig()
+  const resolveRegistration = (input?: unknown) =>
+    entryConfigSchema((input === undefined ? base : input) as Parameters<typeof entryConfigSchema>[0])
+  const scope = settings.register(pluginSettingsNamespace, resolveRegistration, {
+    base,
     applies: 'restart',
     validate: value => { resolveConfig(value) },
   })
@@ -464,9 +647,15 @@ export type { ResolvedConfig } from './config.js'
 export { resolveConfig } from './config.js'
 export { ConnectionController, ConnectionRejectedError } from './connection-controller.js'
 export type { PeerConnectionContext, RpcRouterFactory } from './connection-controller.js'
-export { fingerprint, IdentityInvalidError, IdentityStore, prepareDefaultIdentityDirectory } from './identity-store.js'
+export {
+  fingerprint,
+  IdentityInvalidError,
+  IdentityStore,
+  prepareDefaultIdentityDirectory,
+  resetDefaultIdentityRoles,
+} from './identity-store.js'
 export { serverStorageDirectory } from './identity-store.js'
-export type { HostIdentity, RemoteDeviceRole, TrustedPeer } from './identity-store.js'
+export type { HostIdentity, IdentityErrorCode, RemoteDeviceRole, ResetIdentityOptions, TrustedPeer } from './identity-store.js'
 export { ClientServerApi, HostServerApi, ServerApiError } from './server-api.js'
 export { HostServerConnection } from './server-connection.js'
 export type { WebSocketFactory } from './server-connection.js'

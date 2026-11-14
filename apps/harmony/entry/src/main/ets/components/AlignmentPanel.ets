@@ -6,7 +6,7 @@ interface TaskDaily { time: string; time_zone: string }
 interface TaskWeekly extends TaskDaily { weekdays: number[] }
 interface TaskCron { expression: string; time_zone: string }
 interface TaskRequest { title: string; prompt: string; after_seconds?: number; at?: string; every_seconds?: number; daily?: TaskDaily; weekly?: TaskWeekly; cron?: TaskCron }
-interface BotPayload { id?: string; roomId?: string; sessionId?: string; name?: string; role?: string; instructions?: string; model?: string; effort?: string; members?: string[]; admin?: string; notice?: string; text?: string; questionId?: string; answer?: string; choice?: string }
+interface BotPayload { workDir?: string; permission?: string; engine?: string; private?: boolean; color?: string; mode?: string; id?: string; roomId?: string; sessionId?: string; name?: string; role?: string; instructions?: string; model?: string; effort?: string; members?: string[]; admin?: string; notice?: string; text?: string; questionId?: string; answer?: string; choice?: string }
 
 /** Native controls for the upstream workflows, not an arbitrary RPC/JSON console. */
 @Component
@@ -33,6 +33,13 @@ export struct AlignmentPanel {
   @State filter: string = ''
   @State confirmation: string = ''
   @State botKind: string = 'bot'
+  @State workDir: string = ''
+  @State permission: string = 'default'
+  @State engine: string = ''
+  @State privateBot: boolean = false
+  @State botColor: string = '#4D6BFE'
+  @State roomMode: string = ''
+  @State memoryText: string = ''
   @State operation: string = 'update-bot'
   private t(value: string): string { return runtime.translate(value) }
   private run(action: string, payload: string = '{}'): void { runtime.perform(action,payload).catch(() => {}) }
@@ -165,12 +172,56 @@ export struct AlignmentPanel {
     }.height(Math.min(480, this.availableHeight)).width('100%')
   }
   private selectBot(bot: BotDefinition): void {
-    this.selected=bot.id;this.name=bot.name;this.detail=bot.role;this.body=bot.instructions;this.model=bot.model;this.effort=bot.effort;this.botKind='bot'
+    this.selected=bot.id;this.name=bot.name;this.detail=bot.role;this.body=bot.instructions;this.model=bot.model;this.effort=bot.effort;this.botKind='bot';this.workDir=bot.workDir??'';this.permission=bot.permission??'default';this.engine=bot.engine??'';this.privateBot=bot.private??false;this.botColor=bot.color??'#4D6BFE'
   }
   @Builder
   bots() {
     Scroll() {
       Column({space:10}) {
+        Scroll() {
+          Row({space:8}) {
+            ForEach([
+              {id:'general',name:'通用'},{id:'models',name:'模型服务商'},{id:'local-agents',name:'本地 Agent'},
+              {id:'bots',name:'Bot'},{id:'groups',name:'群聊'},{id:'connectors',name:'连接器'},
+              {id:'im',name:'IM'},{id:'capabilities',name:'能力'},{id:'browser',name:'浏览器'},
+              {id:'computer',name:'电脑操控'},{id:'schedules',name:'定时任务'},{id:'usage',name:'用量'},
+              {id:'secrets',name:'密钥'},{id:'memory',name:'记忆'}
+            ],(item:Choice)=>{
+              Button(this.t(item.name)).fontSize(12).backgroundColor(this.state.botSettingsPage===item.id?this.state.accentColor:'#333333')
+                .onClick(()=>{this.run('botSettings',JSON.stringify({name:item.id}))})
+            })
+          }
+        }.scrollable(ScrollDirection.Horizontal).width('100%')
+        if(this.state.botSettingsPage==='general') {
+          Text(this.t('通用偏好')).fontSize(16).width('100%')
+          Row({space:8}) {
+            Button(this.t('开启思考显示')).onClick(()=>{this.run('setBotPreference',JSON.stringify({name:'thinking',enabled:true}))})
+            Button(this.t('关闭思考显示')).onClick(()=>{this.run('setBotPreference',JSON.stringify({name:'thinking',enabled:false}))})
+          }
+          Select([{value:this.t('按回车发送')},{value:this.t('回车换行')}]).onSelect((index:number)=>{this.run('setBotPreference',JSON.stringify({name:'enterToSend',enabled:index===0}))})
+          Select([{value:this.t('灵动')},{value:this.t('安静')}]).onSelect((index:number)=>{this.run('setBotPreference',JSON.stringify({name:'motion',text:index===0?'lively':'quiet'}))})
+          TextInput({text:this.workDir,placeholder:this.t('团队工作目录')}).onChange((v:string)=>{this.workDir=v})
+          Button(this.t('应用工作目录')).onClick(()=>{this.run('setBotPreference',JSON.stringify({name:'workDir',text:this.workDir}))})
+        }
+        if(this.state.botSettingsPage==='models') {
+          Button(this.t('加载可用模型')).onClick(()=>{this.run('botRead',JSON.stringify({mode:'models'}))})
+          Select(this.state.botModelOptions.map((row:NamedOption):SelectOption=>({value:row.name}))).value(this.t('默认模型'))
+            .onSelect((index:number)=>{this.run('setBotPreference',JSON.stringify({name:'defaultModel',text:this.state.botModelOptions[index].id}))})
+          Text(this.t('服务商连接与 API 密钥请在主机 DS-Bot 设置中配置。')).fontSize(12).width('100%')
+        }
+        if(this.state.botSettingsPage==='usage') {
+          Select([{value:this.t('24 小时')},{value:this.t('7 天')},{value:this.t('30 天')},{value:this.t('12 周')},{value:this.t('12 月')},{value:this.t('全部')}]).onSelect((index:number)=>{
+            const values:string[]=['24h','7d','30d','12w','12m','all']
+            this.run('botSettings',JSON.stringify({name:'usage',mode:values[index]}))
+          })
+        }
+        if(this.state.botSettingsPage==='memory') {
+          Select(this.state.botDefinitions.map((bot:BotDefinition):SelectOption=>({value:bot.name}))).value(this.t('选择 Bot')).onSelect((index:number)=>{this.selected=this.state.botDefinitions[index].id;this.run('botMemory',JSON.stringify({id:this.selected,mode:'memory-view'}))})
+          TextArea({text:this.memoryText,placeholder:this.t('询问或遗忘的内容')}).height(90).onChange((v:string)=>{this.memoryText=v})
+          Row({space:8}) {
+            Button(this.t('询问记忆')).enabled(this.selected.length>0).onClick(()=>{this.run('botMemory',JSON.stringify({id:this.selected,mode:'memory-ask',text:this.memoryText}))})
+          }
+        }
         Row({space:10}) {
           Button(this.t('新建智能体')).onClick(()=>{this.selected='';this.name='';this.body='';this.botKind='bot'})
           Button(this.t('新建群组')).onClick(()=>{this.selected='';this.name='';this.body='';this.botKind='room'})
@@ -180,8 +231,9 @@ export struct AlignmentPanel {
           Button(this.t('计划任务')).onClick(()=>{this.run('botRead',JSON.stringify({mode:'schedules'}))})
         }
         ForEach(this.state.botReport,(row:BotExtra)=>{
-          Text(row.title).fontSize(15).width('100%')
-          Text(row.text).fontSize(13).width('100%').copyOption(CopyOptions.LocalDevice)
+          Text(this.t(row.title)).fontSize(15).width('100%')
+          Text(this.t(row.text)).fontSize(13).width('100%').copyOption(CopyOptions.LocalDevice)
+          if(row.state==='memory-entry') Button(this.t(this.confirmation===row.id?'确认遗忘':'遗忘此记录')).onClick(()=>{if(this.confirmation===row.id){this.run('botMemory',JSON.stringify({id:this.selected,mode:'memory-forget',name:row.id}));this.confirmation=''}else this.confirmation=row.id})
         },(row:BotExtra)=>`report|${row.id}|${row.text}`)
         ForEach(this.state.botDefinitions,(bot:BotDefinition)=>{
           Row({space:8}) {
@@ -201,6 +253,11 @@ export struct AlignmentPanel {
         Divider()
         TextInput({text:this.name,placeholder:this.t('名称')}).onChange((v:string)=>{this.name=v})
         if(this.botKind==='bot') {
+          TextInput({text:this.workDir,placeholder:this.t('工作目录')}).onChange((v:string)=>{this.workDir=v})
+          TextInput({text:this.engine,placeholder:this.t('Agent 引擎（留空使用默认）')}).onChange((v:string)=>{this.engine=v})
+          TextInput({text:this.permission,placeholder:this.t('权限预设')}).onChange((v:string)=>{this.permission=v})
+          TextInput({text:this.botColor,placeholder:this.t('颜色')}).onChange((v:string)=>{this.botColor=v})
+          Row({space:8}) {Text(this.t('私有 Bot'));Toggle({type:ToggleType.Switch,isOn:this.privateBot}).onChange((on:boolean)=>{this.privateBot=on})}
           TextInput({text:this.detail,placeholder:this.t('角色')}).onChange((v:string)=>{this.detail=v})
           TextArea({text:this.body,placeholder:this.t('指令')}).height(90).onChange((v:string)=>{this.body=v})
           Button(this.t('选择模型')).onClick(()=>{this.run('botRead',JSON.stringify({mode:'models'}))})
@@ -208,7 +265,7 @@ export struct AlignmentPanel {
         Select(this.state.botEffortOptions.map((row:NamedOption):SelectOption=>({value:row.name}))).value(this.effort).onSelect((index:number)=>{this.effort=this.state.botEffortOptions[index].id})
         TextInput({text:this.model,placeholder:this.t('模型')}).onChange((v:string)=>{this.model=v})
           TextInput({text:this.effort,placeholder:this.t('思考强度')}).onChange((v:string)=>{this.effort=v})
-          Button(this.t('保存智能体')).enabled(this.name.trim().length>0).onClick(()=>{this.bot(this.selected?'update-bot':'create-bot',{id:this.selected||undefined,name:this.name,role:this.detail,instructions:this.body,model:this.model||undefined,effort:this.effort||undefined})})
+          Button(this.t('保存智能体')).enabled(this.name.trim().length>0).onClick(()=>{this.bot(this.selected?'update-bot':'create-bot',{id:this.selected||undefined,name:this.name,role:this.detail,instructions:this.body,model:this.model||undefined,effort:this.effort||undefined,workDir:this.workDir||undefined,permission:this.permission,engine:this.engine||undefined,private:this.privateBot,color:this.botColor})})
           if(this.selected) {
             Row({space:8}) {
               Button(this.t('设为主智能体')).onClick(()=>{this.bot('set-main',{id:this.selected})})

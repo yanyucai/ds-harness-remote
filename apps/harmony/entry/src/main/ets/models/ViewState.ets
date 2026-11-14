@@ -1,12 +1,12 @@
 /** Mirrors the runtime's JSON input for actions that carry a single field. */
-export interface ActionInput { id?: string; mode?: string; backend?: string; rating?: string; name?: string; text?: string; offset?: number; enabled?: boolean }
+export interface ActionInput { uri?: string; size?: number; id?: string; mode?: string; backend?: string; rating?: string; name?: string; text?: string; offset?: number; enabled?: boolean }
 export interface ActivityRow { id: string; category: string; title: string; detail: string; status: string; session: string }
 export interface JobRow { id: string; label: string; status: string; progress?: string; detail?: string; startedAt?: number; finishedAt?: number }
 export interface ActivityState { rows: ActivityRow[]; jobs: JobRow[]; loading: boolean; error: string; output: string; outputJob: string; lossy: boolean }
 export interface DirectoryEntry { name: string; path: string; hidden?: boolean }
 export interface HostDirectory { path: string; home?: string; crumbs?: DirectoryEntry[]; entries: DirectoryEntry[]; truncated?: boolean }
 export interface TaskDefinition { id: string; sessionId: string; kind: string; title: string; prompt: string; scheduledAt: string; status: string; afterSeconds?: number; everySeconds?: number; time?: string; timeZone?: string; weekdays?: number[]; expression?: string }
-export interface BotDefinition { id: string; sessionId: string; name: string; role: string; instructions: string; model: string; effort: string; main: boolean }
+export interface BotDefinition { workDir?: string; permission?: string; engine?: string; private?: boolean; color?: string; id: string; sessionId: string; name: string; role: string; instructions: string; model: string; effort: string; main: boolean }
 export interface BotRoom { id: string; name: string; members: string[]; notice: string; admin: string; paused?: boolean }
 export interface BotRequest { id: string; title: string; detail: string; session: string }
 export interface ReadingPosition { key: string; offset: number; atBottom: boolean }
@@ -69,7 +69,7 @@ export interface FailedSend { id: string; text: string; error: string; state: st
 export interface ViewState {
   imageAllowed: boolean; imageMaxCount: number; imageMaxBytes: number;
   appVersion: string; updateVersion: string; backgroundActive: boolean; backgroundError: string; downloadBusy: boolean; downloadBytes: number;
-  botReport: BotExtra[]; botModelOptions: NamedOption[]; botEffortOptions: NamedOption[];
+  botSettingsPage: string; botPrefs: string; botReport: BotExtra[]; botModelOptions: NamedOption[]; botEffortOptions: NamedOption[];
   stagedFiles: StagedFile[];
   managedSessions: CatalogRow[]; workspaceTitle: string; botTarget: string; botReadOnly: string; botView: string; botExtras: BotExtra[]; botAsides: BotExtra[];
   draftRevision: number; autoConnectHost: boolean; failedSends: FailedSend[];
@@ -86,8 +86,11 @@ export interface ViewState {
   groupBy: string; orderBy: string; archiveFilter: string; archivedCount: number;
   draft: string; queue: QueueRow[]; modes: PresetRow[]; permissions: PresetRow[]; panelWarning: string;
   skills: SkillRow[]; filePath: string; files: FileRow[]; filePreview: FilePreview;
+  compactionStatus: string; compactionCancellable: boolean;
+  uploadProgress: string
+  uploadMaxBytes: number
   compactHistory: boolean; children: CatalogRow[]; info: InfoRow[];
-  languagePreference: string; themePreference: string; typographyDensity: string;
+  languagePreference: string; themePreference: string; chatAppearance: string; accentColor: string; activityDockMode: string; typographyDensity: string;
   notificationsEnabled: boolean;
   transportPreference: string;
   plugins: PluginRow[]; settingsWritable: boolean;
@@ -105,7 +108,7 @@ export function emptyState(): ViewState {
   return {
     imageAllowed: true, imageMaxCount: 4, imageMaxBytes: 8388608,
     appVersion: '', updateVersion: '', backgroundActive: false, backgroundError: '', downloadBusy: false, downloadBytes: 0,
-    botReport: [], botModelOptions: [], botEffortOptions: [],
+    botSettingsPage: 'bots', botPrefs: '{}', botReport: [], botModelOptions: [], botEffortOptions: [],
     stagedFiles: [],
     managedSessions: [], workspaceTitle: '', botTarget: '', botReadOnly: '', botView: '', botExtras: [], botAsides: [],
     draftRevision: 0, autoConnectHost: true, failedSends: [],
@@ -125,8 +128,8 @@ export function emptyState(): ViewState {
       path: '', name: '', kind: 'text', text: '', lines: 0, eof: true,
       data: '', mimeType: '', missingFonts: [], error: '', offset: 1,
     },
-    compactHistory: false, children: [], info: [],
-    languagePreference: 'zh-CN', themePreference: 'system', typographyDensity: 'compact',
+    compactionStatus: '', compactionCancellable: false, uploadProgress: '', uploadMaxBytes: 20 * 1024 * 1024, compactHistory: false, children: [], info: [],
+    languagePreference: 'zh-CN', themePreference: 'system', chatAppearance: '{}', accentColor: '#4D6BFE', activityDockMode: 'compact', typographyDensity: 'compact',
     notificationsEnabled: true,
     transportPreference: 'auto',
     plugins: [], settingsWritable: false, form: [], formTitle: '', formResettable: false,

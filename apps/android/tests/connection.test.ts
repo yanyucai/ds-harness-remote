@@ -1,3 +1,4 @@
+vi.mock('expo', () => ({ requireOptionalNativeModule: () => undefined }))
 import { runScenarios, scenarioName } from '../../../scripts/test-scenarios.mjs'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { AdaptiveTransportOptions } from '@dsh-remote/webrtc'
@@ -107,6 +108,35 @@ afterEach(async () => {
   await Promise.all(testState.cores.map(core => core.close()))
   vi.useRealTimers()
 })
+
+  it('scopes binary upload support to the current Host and clears it on close', async () => {
+    const connection = new AndroidRemoteConnection()
+    for (const binary of [false, true, false]) {
+      testState.capabilities = ['harness.remote.v1', 'workspace.upload.v1', ...(binary ? ['workspace.upload.binary.v1'] : [])]
+      await connection.connect('https://server.example.com', identity, host, 'synthetic', () => undefined)
+      expect(connection.supportsBinaryUpload()).toBe(binary)
+    }
+    await connection.close()
+    expect(connection.supportsBinaryUpload()).toBe(false)
+  })
+
+  it('gives TURN-only attempts an allocation budget without slowing automatic routing', async () => {
+    await runScenarios([
+      { name: 'automatic', preferred: ['lan', 'p2p', 'turn', 'relay'] as const, timeout: 6000 },
+      { name: 'TURN', preferred: ['turn', 'relay'] as const, timeout: 12000 },
+      { name: 'forced Relay', preferred: ['turn', 'relay'] as const, forceRelay: true, timeout: 6000 },
+      { name: 'default automatic', preferred: undefined, timeout: 6000 },
+    ].map(row => ({ name: row.name, run: async () => {
+      prepareScenario1()
+      const connection = new AndroidRemoteConnection()
+      await connection.connect('https://server.example.com', identity, host, 'synthetic', () => undefined, {
+        preferredTransports: row.preferred === undefined ? undefined : [...row.preferred],
+        forceRelay: 'forceRelay' in row ? row.forceRelay : false,
+      })
+      expect(testState.transportOptions[0]?.negotiateTimeoutMs).toBe(row.timeout)
+      await connection.close()
+    } })))
+  })
 
   it('uses the native Typert attachment contract and rejects late images from retired connections', async () => {
     await runScenarios(['direct', 'business-result', 'denied', 'disconnected', 'cancelled'].map(mode => ({ name: mode, run: async () => {
@@ -273,6 +303,10 @@ afterEach(async () => {
         { reason: 'webrtc-closed' as const, retryable: true },
         { reason: 'control-error' as const, retryable: true },
         { reason: 'control-closed' as const, closeCode: 1006, retryable: true },
+        { reason: 'control-closed' as const, closeCode: 4001, closeReason: 'CONNECTION_FAILED', retryable: true },
+        { reason: 'control-closed' as const, closeCode: 4001, closeReason: 'RATE_LIMITED', retryable: false },
+        { reason: 'control-closed' as const, closeCode: 4009, closeReason: 'heartbeat timeout', retryable: true },
+        { reason: 'control-closed' as const, closeCode: 4009, closeReason: 'server shutdown', retryable: true },
         { reason: 'control-closed' as const, closeCode: 4003, retryable: false },
         { reason: 'control-closed' as const, closeCode: 1008, retryable: false },
         { reason: 'invalid-control-frame' as const, retryable: false },

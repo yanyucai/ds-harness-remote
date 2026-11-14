@@ -1,5 +1,6 @@
+import { botSettingsRows } from './bot-settings'
 import { imageInputLimits, validateImageInput } from './image-input'
-import { isTextFile, isValidUtf8Text, MAX_SINGLE_FILE_BYTES, MAX_TOTAL_FILES_BYTES } from '../../android/src/screens/chat-files'
+import { isTextFile, isValidUtf8Text, MAX_SINGLE_FILE_BYTES, MAX_TOTAL_FILES_BYTES, workspaceUploadMaxBytes, formatUploadedFilesReferencePrompt, type RpcCaller } from '../../android/src/screens/chat-files'
 import { sha256 } from '@noble/hashes/sha256'
 import { generateKeyPair, identityFingerprint, fromBase64Url } from '@dsh-remote/crypto'
 import { deviceTokenPairSchema, type DeviceTokenPair } from '@dsh-remote/protocol'
@@ -10,13 +11,17 @@ import { resolveStartupAutoConnect } from '../../android/src/lib/auto-connect'
 import { ForegroundConnectionRecovery } from '../../android/src/services/connection-recovery'
 import { startResidentTask, stopResidentTask, residentTaskActive, residentTaskError, observeResidentTask, openAppPowerManagementPage } from './background'
 import { TaskNotifications, activeTask, type ObservedTask } from './notification-state'
+import { setCompactionOwner, compactionStore } from './compaction-store'
 import { DownloadTask } from './download-task'
 import { latestRelease, HARMONY_VERSION, RELEASE_URL } from './releases'
+import { parseRelayRange } from '../../android/src/screens/bot/replies'
+import { pollRoomRows } from '../../android/src/services/bot-room-rows'
+import { botMessageClock } from '../../android/src/screens/bot/clock'
 import { heartbeatMessageBody } from '../../android/src/ui/heartbeat-message'
 import { HarmonyBrowseMemory, type ReadingPosition } from './browse-memory'
 import { translateNative } from './localization'
 import { isCodexPermissionPreset, withCodexPermission, codexPermissionPreset } from '../../android/src/services/codex'
-import { uploadFile } from './file-transfer'
+import { uploadFile, uploadNativeFile } from './file-transfer'
 import { copyText, shareText, setStatusBarVisible, clearBrowsePreferences } from './platform.js'
 import { checkedBotView } from '../../android/src/services/bot-view'
 import { validateViewAnswer } from '../../android/src/vendor/ds-bot/views.js'
@@ -24,13 +29,13 @@ import { SessionActivity } from './session-activity'
 import { attachRtcBridge, receiveRtcBridge } from './rtc-bridge'
 import { createChatImageLoader, chatImageAttachmentReference } from '../../android/src/services/chat-image-loader'
 import type { ChatImage } from '../../android/src/types'
-import { botMessageRequest, objects as botObjects, object as botObject, BOT_OPERATIONS, type BotOperation, type BotState } from '../../android/src/services/bot-catalog'
+import { botMessageRequest, objects as botObjects, object as botObject, BOT_OPERATIONS, canDeleteBot, type BotOperation, type BotState } from '../../android/src/services/bot-catalog'
 import { loadHermesCatalog } from '../../android/src/services/hermes'
 import { createHermesSession, createHermesWorkspace, createPiWorkspace, createClaudeWorkspace, createAntigravityWorkspace, createOpencodeWorkspace } from '../../android/src/services/cursor'
 import { createCodexWorkspace } from '../../android/src/services/codex'
 import type { ScheduleRecord, ScheduleCreateRequest, ScheduleTimingChange } from '@dsh-remote/client-core'
 import { applyLanguagePreference, isLanguagePreference, strings, type LanguagePreference } from '../../android/src/locales/i18n'
-import { isThemePreference, isTypographyDensity, type ThemePreference, type TypographyDensity } from '../../android/src/ui/theme'
+import { isThemePreference, isTypographyDensity, type ThemePreference, type TypographyDensity, type ChatAppearance, normalizeChatAppearance, resolveChatMetrics, CHAT_ACCENT_SWATCHES, isActivityDockMode } from '../../android/src/ui/theme'
 import { foldHistory, applyMuxFrame, sessionRunningForMuxFrame } from '../../android/src/state/event-reducer'
 import { inboxQueuedItems, oldestSeq, prependHistory } from '../../android/src/state/message-helpers'
 import { withActiveCodexTurn } from '../../android/src/state/session-state'
@@ -67,7 +72,7 @@ import { publishTaskNotification, requestNotificationPermission, updateActivityN
 interface Credentials extends DeviceTokenPair { account: string }
 interface ReadingInput { id?: string; key?: string; offset?: number; atBottom?: boolean }
 interface PromptAttachment { data: string; mediaType: string; name?: string }
-interface Input { images?: PromptAttachment[]; answers?: AskUserQuestionAnswer['answers']; server?: string; email?: string; password?: string; id?: string; text?: string; decision?: string; provider?: string; model?: string; effort?: string; path?: string; image?: string; mediaType?: string; name?: string; backend?: string; mode?: string; rating?: string; enabled?: boolean; offset?: number }
+interface Input { uri?: string; size?: number; images?: PromptAttachment[]; answers?: AskUserQuestionAnswer['answers']; server?: string; email?: string; password?: string; id?: string; text?: string; decision?: string; provider?: string; model?: string; effort?: string; path?: string; image?: string; mediaType?: string; name?: string; backend?: string; mode?: string; rating?: string; enabled?: boolean; offset?: number }
 interface PresetRow { id: string; name: string; description: string; current: boolean; broken: boolean }
 interface TerminalRow { id: string; title: string; shell: string; state: string }
 interface UiArtifactRow {
@@ -220,17 +225,22 @@ export class HarmonyRuntime {
   private sessions: RemoteSession[] = []
   private workspace?: WorkspaceView
   private session?: RemoteSession
-  private stagedFiles: Array<{ id: string; scope: string; name: string; path: string }> = []
+  private stagedFiles: Array<{ id: string; scope: string; name: string; path: string; uri?: string; size?: number }> = []
   private stagedData = new Map<string,string>()
   private hostModes: Record<string,'agent'|'bot'> = {}
   private imageCache = new Map<string, string>()
   private imageAbort = new AbortController()
   private botState?: BotState
+  private groupRows = new Map<string, { rows: Record<string, unknown>[]; open: boolean; misses: number }>()
   private botTarget = ''
   private botExtras: Array<{ id: string; title: string; text: string; state: string }> = []
   private botHistory: Array<{ id: string; title: string; text: string; state: string; view: string }> = []
   private botCursor: unknown
   private botView = ''
+  private memoryEntries = new Map<string, {owner:string;entry:Record<string,unknown>}>()
+  private botSettingsPage = 'bots'
+  private botSettingsData: unknown
+  private botUsageRange: '24h' | '7d' | '30d' | '12w' | '12m' | 'all' = '7d'
   private botReport: Array<{ id: string; title: string; text: string; state: string }> = []
   private botModelOptions: Array<{ id: string; name: string }> = []
   private botEffortOptions: Array<{ id: string; name: string }> = []
@@ -308,11 +318,16 @@ export class HarmonyRuntime {
   private filePath = ''
   private files: FileRow[] = []
   private filePreview?: FilePreview
+  private uploadProgress = ''
+  private compactionSessionId = ''
+  private compactionStatus = ''
   private compactHistory = false
   private info: InfoRow[] = []
   private languagePreference: LanguagePreference = 'zh-CN'
   private themePreference: ThemePreference = 'system'
   private typographyDensity: TypographyDensity = 'compact'
+  private chatAppearance: ChatAppearance = normalizeChatAppearance(undefined)
+  private activityDockMode = 'compact'
   private pluginViews: PluginBundleView[] = []
   private pluginRows: PluginRow[] = []
   private settingsWritable = false
@@ -587,6 +602,8 @@ export class HarmonyRuntime {
         if (isThemePreference(val)) this.themePreference = val
       } catch {}
     }
+    this.chatAppearance = normalizeChatAppearance(JSON.parse(await prefRead('chatAppearance') || '{}'))
+    const activityMode = await prefRead('activityDockMode'); if (isActivityDockMode(activityMode)) this.activityDockMode = activityMode
     const densityPrefRaw = await prefRead(PREF_KEYS.typographyDensity)
     if (densityPrefRaw) {
       try {
@@ -727,7 +744,7 @@ export class HarmonyRuntime {
     if (action === 'saveReadingPosition') {
       try { return await this.saveReadingPosition(JSON.parse(raw) as ReadingInput) } catch { return false }
     }
-    if (this.busy && !['disconnect', 'reconnect', 'interrupt', 'approval', 'question', 'back'].includes(action)) return false
+    if (this.busy && !['cancelUpload', 'cancelCompaction', 'disconnect', 'reconnect', 'interrupt', 'approval', 'question', 'back'].includes(action)) return false
     let input: Input
     try { input = JSON.parse(raw || '{}') as Input } catch { return false }
     let success = true
@@ -814,6 +831,40 @@ export class HarmonyRuntime {
         await this.botOperation('view-reply', JSON.stringify({ sessionId: this.session!.sessionId, viewId: pending.id, action: reply.action, values: reply.values }))
       }
       else if (action === 'botEarlier') await this.loadBotEarlier()
+      else if (action === 'botSettings') {
+        const page = input.name ?? 'general'
+        if (!['general','models','local-agents','bots','groups','connectors','im','capabilities','browser','computer','schedules','usage','secrets','memory'].includes(page)) throw new Error('未知设置页面')
+        this.botSettingsPage = page
+        if (['24h','7d','30d','12w','12m','all'].includes(input.mode ?? '')) this.botUsageRange = input.mode as typeof this.botUsageRange
+        await this.loadBots()
+        const endpoint = ({models:'providers','local-agents':'local-agents',usage:'usage',schedules:'schedules'} as Record<string,string>)[page]
+        if (endpoint) this.botSettingsData = await this.connection.requireBotClient().call(endpoint as BotOperation, page === 'usage' ? {timeZone:Intl.DateTimeFormat().resolvedOptions().timeZone} : null)
+        this.botReport = this.botState ? botSettingsRows(this.botState,page,this.botSettingsData,this.botUsageRange) : []
+        if (page === 'schedules') await this.readBotDetails('schedules','')
+      }
+      else if (action === 'setBotPreference') {
+        const key = input.name ?? ''
+        if (!['thinking','enterToSend','motion','defaultModel','workDir'].includes(key)) throw new Error('未知 Bot 偏好')
+        const value = ['thinking','enterToSend'].includes(key) ? input.enabled === true : input.text ?? ''
+        if (key === 'workDir') await this.botOperation('team-workspace',JSON.stringify({path:value}))
+        else await this.botOperation('set-prefs',JSON.stringify({[key === 'defaultModel' ? 'defaultBotModel' : key]:value}))
+      }
+      else if (action === 'botMemory') {
+        if (!this.botState?.bots.some(bot=>bot.id===input.id) && !this.botState?.rooms.some(room=>room.id===input.id)) throw new Error('请选择主机上的 Bot 或群聊')
+        const mode = input.mode ?? 'memory-view'
+        if (!['memory-view','memory-history','memory-ask','memory-forget','memory-restore'].includes(mode)) throw new Error('未知记忆操作')
+        const stored = mode === 'memory-forget' ? this.memoryEntries.get(input.name ?? '') : undefined
+        if (mode === 'memory-forget' && (!stored || stored.owner !== input.id)) throw new Error('请选择当前记忆记录，刷新后重试。')
+        const request = stored ? {id:input.id,scope:text(stored.entry.scope)||'own',topic:stored.entry.topic??null,text:text(stored.entry.text)} : {id:input.id,text:input.text??''}
+        const response = botObject(await this.connection.requireBotClient().call(mode as BotOperation, request))
+        const view = mode === 'memory-view' ? response : botObject(response.view)
+        const entries = botObjects(view.entries)
+        this.memoryEntries.clear()
+        this.botReport = [{id:'memory-summary',title:'记忆',text:text(response.answer)||text(botObject(view.summary).text),state:''},...entries.map((row,index)=>{
+          const key=String(index);this.memoryEntries.set(key,{owner:input.id!,entry:row})
+          return {id:key,title:[text(row.scope),text(row.topic)].filter(Boolean).join(' · ')||'记忆记录',text:text(row.text),state:'memory-entry'}
+        })]
+      }
       else if (action === 'botRead') await this.readBotDetails(input.mode ?? '', input.name ?? '')
       else if (action === 'botRefresh') await this.refreshBotConversation()
       else if (action === 'botOperation') await this.botOperation(input.mode ?? '', input.text ?? '{}')
@@ -824,6 +875,15 @@ export class HarmonyRuntime {
         if (action === 'copyMessage') await copyText(row.text)
         else if (this.context) await shareText(this.context,row.text)
       }
+      else if (action === 'stageNativeFile') {
+        this.requireConnected()
+        if (!this.session || (this.session.backend ?? 'harness') !== 'harness') throw new Error('当前后端不支持工作区上传。')
+        const uri = input.uri ?? '', name = input.name ?? '', size = input.size ?? 0
+        if (!uri.startsWith('file://') || !name || /[\\/\u0000]/.test(name) || name.length > 220 || size <= 0 || size > workspaceUploadMaxBytes(this.connection.getStats()?.mode) || this.stagedFiles.length >= 8) throw new Error('附件名称、大小或数量超过限制。')
+        this.stagedFiles.push({ id: createNativeRpcId(), scope: this.sessionKey(), name, path: '', uri, size })
+      }
+      else if (action === 'cancelUpload') { this.imageAbort.abort(); this.imageAbort = new AbortController(); this.uploadProgress = '' }
+      else if (action === 'cancelCompaction') { if (this.session) { const status = await this.connection.requireProxy().cancelTrackedCompaction(this.session.sessionId); this.compactionStatus = status?.message || '已请求取消，正在等待主机确认。' } }
       else if (action === 'uploadFile') {
         this.requireConnected()
         if (!this.session || (this.session.backend ?? 'harness') !== 'harness') throw new Error('当前后端不支持工作区上传。')
@@ -910,6 +970,13 @@ export class HarmonyRuntime {
           this.savePrompts()
         }
       }
+      else if (action === 'setChatAppearance') {
+        if (!['fontScale','spacingScale','letterSpacing','accent','bubbleStyle','codeTheme'].includes(input.name ?? '')) throw new Error('未知外观设置')
+        this.chatAppearance = normalizeChatAppearance({ ...this.chatAppearance, [input.name!]: input.text })
+        await prefWrite('chatAppearance', JSON.stringify(this.chatAppearance))
+      }
+      else if (action === 'resetChatAppearance') { this.chatAppearance = normalizeChatAppearance(undefined); await prefWrite('chatAppearance', JSON.stringify(this.chatAppearance)) }
+      else if (action === 'setActivityDockMode') { if (isActivityDockMode(input.name)) { this.activityDockMode = input.name; await prefWrite('activityDockMode', input.name) } }
       else if (action === 'setTheme') {
         const val = input.name ?? input.id
         if (isThemePreference(val)) {
@@ -961,7 +1028,7 @@ export class HarmonyRuntime {
         this.view = this.view === 'chat' ? (this.workspace ? 'sessions' : 'workspaces') : this.connected ? 'workspaces' : this.credentials ? 'devices' : 'login'
       } else throw new Error('不支持的操作。')
     } catch (error) { success = false; if (generation === this.generation || ['login', 'startOAuth', 'connect', 'trustHost'].includes(action)) this.error = safeError(error) }
-    finally { if (!concurrent) this.busy = false; this.publish() }
+    finally { if (action === 'prompt') this.uploadProgress = ''; if (!concurrent) this.busy = false; this.publish() }
     return success
   }
 
@@ -1219,6 +1286,7 @@ export class HarmonyRuntime {
         : preference === 'turn'
           ? ['turn', 'relay']
           : ['lan', 'p2p', 'turn', 'relay']
+      setCompactionOwner(`${this.server}|${this.account}|${host.deviceId}|${pin}`)
       await this.connection.connect(this.server, this.identity!, host, this.credentials!.accessToken, frame => {
         if (this.generation !== generation) return
         this.onFrame(frame)
@@ -1527,6 +1595,21 @@ export class HarmonyRuntime {
     const text = line.trim()
     if (!session || !text) throw new Error('请先打开会话。')
     if (!text.startsWith('/')) throw new Error('Slash 命令需要以 / 开头。')
+    if (text === '/compact') {
+      if (this.compactionSessionId === session.sessionId) throw new Error('正在跟踪此会话的压缩，请等待或取消。')
+      const proxy = this.connection.requireProxy(), generation = this.generation
+      this.compactionSessionId = session.sessionId; this.compactionStatus = '正在提交压缩请求'; this.publish()
+      void proxy.compactSessionTracked(session.sessionId, { onStatus: status => {
+        if (generation === this.generation) { this.compactionStatus = status.message || ({accepted:'等待压缩',running:'正在压缩',cancelling:'正在取消',succeeded:'压缩完成',failed:'压缩失败',cancelled:'已取消',interrupted:'压缩已中断',unconfirmed:'压缩结果待确认'}[status.state]); this.publish() }
+      } }).then(outcome => {
+        if (generation === this.generation) {
+          this.compactionStatus = outcome.kind === 'unconfirmed' ? outcome.message : outcome.status.message || `压缩：${outcome.status.state}`
+          this.publish()
+        }
+      }).catch(() => { if (generation === this.generation) { this.compactionStatus = '压缩状态暂不可确认，恢复连接后将查询原操作。'; this.publish() } })
+        .finally(() => { if (generation === this.generation) { this.compactionSessionId = ''; this.publish() } })
+      return
+    }
     const result = await this.connection.requireSessionTools(session.sessionId).executeCommand(session.sessionId, text)
     if (result.kind === 'error') throw new Error(result.text ?? '命令执行失败。')
     this.notice = result.text ?? `已执行 ${text}`
@@ -2065,7 +2148,7 @@ export class HarmonyRuntime {
     } else throw new Error('未知会话操作。')
     if (generation === this.generation) await this.loadCatalog()
   }
-  private hostDirectory: { path: string; parent?: string; entries: Array<{ name: string; path: string }> } = { path: '', entries: [] }
+  private hostDirectory: { path: string; parent?: string; entries: Array<{ name: string; path: string; uri?: string; size?: number }> } = { path: '', entries: [] }
   private async browseHostDirectory(path: string): Promise<void> {
     this.requireConnected(); const generation = this.generation
     const result = await this.connection.requireProxy().hostListDirectory(path || undefined)
@@ -2183,13 +2266,15 @@ export class HarmonyRuntime {
     this.requireConnected()
     if (!(BOT_OPERATIONS as readonly string[]).includes(operation)) throw new Error('不允许的 Bot 操作。')
     if (this.botState?.readOnly !== undefined) throw new Error(this.botState.readOnly || strings.bots.sessionUnavailable)
-    await this.connection.requireBotClient().call(operation as BotOperation, JSON.parse(raw))
+    const payload = JSON.parse(raw) as Record<string,unknown>
+    if (operation === 'delete-bot' && !canDeleteBot(this.botState,this.botState?.bots.find(bot=>bot.id===payload.id))) throw new Error('不能删除此 Bot，请先检查主 Bot 与团队状态。')
+    await this.connection.requireBotClient().call(operation as BotOperation, payload)
     await this.loadBots()
   }
   private async loadBots(): Promise<void> {
     this.requireConnected()
     try {
-      const state = await this.connection.requireBotClient().state()
+      const state = await this.connection.requireBotClient().state(undefined, false, this.botState)
       this.botState = state
       this.bots = state.bots.map(b => ({
         id: b.id,
@@ -2229,7 +2314,7 @@ export class HarmonyRuntime {
     if (!this.botTarget || !this.session || !this.connected) return
     const selection = this.selection, control = this.botPoll = new AbortController()
     try {
-      const state = await this.connection.requireBotClient().state(control.signal)
+      const state = await this.connection.requireBotClient().state(control.signal, false, this.botState)
       if (selection !== this.selection || control.signal.aborted) return
       this.botState = state
       const pending = botObject(state.views?.[this.session.sessionId])
@@ -2238,7 +2323,18 @@ export class HarmonyRuntime {
       if (room) {
         const progress = await this.connection.requireBotClient().call('room-progress', { roomId: room.id }, control.signal)
         if (selection !== this.selection || control.signal.aborted) return
-        this.botExtras = botObjects(progress).flatMap(row=>botObjects(row.replies)).map((row,index)=>({ id: text(row.id)||String(index), title: text(row.name), text: text(row.text), state: text(row.status) }))
+        const entries = botObjects(progress)
+        this.botExtras = entries.flatMap(entry => botObjects(entry.replies)).map((row,index)=>({ id: text(row.id)||String(index), title: [text(row.name), typeof row.time === 'number' ? botMessageClock(row.time) : ''].filter(Boolean).join(' · '), text: text(row.text), state: text(row.status) }))
+        for (const item of this.messages.filter(row => row.kind === 'tool').slice(-8)) {
+          if (item.kind !== 'tool') continue
+          const range = parseRelayRange(item.resultDetail?.text)
+          const cached = this.groupRows.get(item.id)
+          if (!range || cached?.open === false) continue
+          const result = await pollRoomRows((endpoint, payload, signal) => this.connection.requireBotClient().call(endpoint,payload,signal), { roomId: this.session!.sessionId, callId: item.id, range }, control.signal)
+          if (selection !== this.selection || control.signal.aborted) return
+          const misses = result.legacy && !result.rows?.length && !this.running ? (cached?.misses ?? 0) + 1 : 0
+          this.groupRows.set(item.id, { rows: result.rows?.length ? result.rows : cached?.rows ?? [], open: result.open && misses < 2, misses })
+        }
       }
       this.schedulePublish()
     } finally {
@@ -2346,6 +2442,33 @@ export class HarmonyRuntime {
     this.notice = `已在“${target.title || target.path}”中新建对话。`
   }
   /** Merge only the display-bearing projection fields; a failed refresh stays silent. */
+  private catalogTimer?: ReturnType<typeof setTimeout>
+  private catalogFlight = false
+  private catalogDirty = false
+  private scheduleCatalogRefresh(): void {
+    this.catalogDirty = true
+    if (this.catalogTimer || this.catalogFlight) return
+    const generation = this.generation
+    this.catalogTimer = setTimeout(async () => {
+      this.catalogTimer = undefined
+      if (!this.connected || generation !== this.generation) return
+      this.catalogFlight = true; this.catalogDirty = false
+      try {
+        const proxy = this.connection.requireProxy()
+        const [sessions, catalog] = await Promise.all([proxy.sessionList(), proxy.workspaceList()])
+        if (this.connected && generation === this.generation) {
+          this.sessions = [...sessions.map(row => ({ ...row, backend: 'harness' as const })), ...this.sessions.filter(row => row.backend && row.backend !== 'harness')]
+          const workspaces = catalog.items.map(row => ({ ...row, backend: 'harness' as const }))
+          this.workspaces = [...workspaces, ...this.workspaces.filter(row => row.backend && row.backend !== 'harness')]
+          this.archived = catalog.archivedSessionIds
+          const selected = this.sessions.find(row => row.sessionId === this.session?.sessionId)
+          if (selected) this.session = selected
+          this.schedulePublish()
+        }
+      } catch { /* A catalog read failure must not replay mutations or clear the last catalog. */ }
+      finally { this.catalogFlight = false; if (this.catalogDirty) this.scheduleCatalogRefresh() }
+    }, 200)
+  }
   private async refreshTitles(): Promise<void> {
     const generation = this.generation
     try {
@@ -2458,7 +2581,7 @@ export class HarmonyRuntime {
     this.requireConnected()
     this.download.cancel(); ++this.downloadRevision; this.downloadBusy = false
     if (this.session) this.observedMessages.set(this.session.sessionId, this.messages.slice(-100))
-    this.stagedFiles = []; this.stagedData.clear(); this.botTarget = ''; this.botView = ''; this.botExtras = []; this.botHistory = []; this.botPoll?.abort(); if (this.botTimer) clearTimeout(this.botTimer)
+    this.stagedFiles = []; this.stagedData.clear(); this.groupRows.clear(); this.botTarget = ''; this.botView = ''; this.botExtras = []; this.botHistory = []; this.botPoll?.abort(); if (this.botTimer) clearTimeout(this.botTimer)
     const session = this.sessions.find(s => s.sessionId === id)
     if (!session) throw new Error('会话不存在，请刷新工作区。')
     const selection = ++this.selection
@@ -2557,6 +2680,17 @@ export class HarmonyRuntime {
       this.messages = mergeAcpHistoryAndLive(foldAcpHistory(history.events, id), this.messages)
     }
     if (selection === this.selection) {
+      if ((session.backend ?? 'harness') === 'harness') {
+        try {
+          const state = await this.connection.requireBotClient().state(undefined, false, this.botState)
+          if (selection !== this.selection) return
+          this.botState = state
+          const bot = state.bots.find(row => row.sessionId === id || row.parts?.includes(id))
+          const room = state.rooms.find(row => row.sessionId === id || row.ownParts?.includes(id) || row.parts?.includes(id))
+          this.botTarget = bot?.id ?? room?.id ?? ''
+          if (this.botTarget) void this.refreshBotConversation().catch(() => {})
+        } catch { /* Ordinary sessions and Hosts without DS-Bot remain fully usable. */ }
+      }
       if ((session.backend ?? 'harness') === 'harness') this.activity.start(this.connection.requireSessionTools(session.sessionId), session.sessionId)
       await this.loadModels()
       if (selection === this.selection && this.connected) await this.browse.visit(this.browseScope(), session.sessionId).catch(() => { this.notice = '会话已打开，但未能保存浏览位置。' })
@@ -2628,14 +2762,22 @@ export class HarmonyRuntime {
   private async prompt(input: Input): Promise<void> {
     this.requireConnected(); const session = this.session
     if (!session) return
+    if ((session.backend ?? 'harness') === 'harness' && input.text?.trim() === '/compact' && !this.stagedFiles.length && !input.images?.length && !input.image) { await this.runCommand('/compact'); return }
     const files = this.stagedFiles.filter(row => row.scope === this.sessionKey()), fileSelection = this.selection, generation = this.generation
     for (const file of files) {
-      if (!file.path) file.path = await uploadFile((method,args,signal)=>this.connection.rpc(method,args,signal),session.sessionId,file.name,this.stagedData.get(file.id) ?? '',()=>fileSelection === this.selection && generation === this.generation && this.connected,this.imageAbort.signal)
+      if (!file.path) {
+        const active = () => fileSelection === this.selection && generation === this.generation && this.connected
+        const rpc: RpcCaller = (method, args, signal) => this.connection.rpc(method, args, signal)
+        rpc.supportsBinaryUpload = this.connection.supportsBinaryUpload?.() ?? false
+        file.path = file.uri
+          ? await uploadNativeFile(rpc, session.sessionId, file.name, file.uri, active, this.imageAbort.signal, this.connection.getStats()?.mode,
+              (bytes, total) => { this.uploadProgress = `${file.name} · ${Math.round(bytes / total * 100)}%`; this.schedulePublish() })
+          : await uploadFile(rpc,session.sessionId,file.name,this.stagedData.get(file.id) ?? '',active,this.imageAbort.signal)
+      }
       if (fileSelection !== this.selection || generation !== this.generation) throw new Error('会话已切换。')
     }
-    if (files.length) {
-      input = { ...input, text: (input.text ?? '').trimEnd() + '\n\n' + files.map(row => '@' + (/\s|"/.test(row.path) ? JSON.stringify(row.path) : row.path)).join(' ') }
-    }
+    if (files.length) input = { ...input, text: formatUploadedFilesReferencePrompt(input.text ?? '', files) }
+    this.uploadProgress = ''
     const images = input.images ?? (input.image ? [{ data: input.image, mediaType: input.mediaType ?? 'image/jpeg' }] : [])
     if (!(input.text ?? '').trim() && images.length === 0) return
     const backend = session.backend ?? 'harness'
@@ -2737,6 +2879,14 @@ export class HarmonyRuntime {
   }
   private onFrame(frame: MuxStreamFrame): void {
     const payload = frame.payload
+    if (payload.type === 'session/catalog-changed') { this.scheduleCatalogRefresh(); return }
+    if (payload.type === 'session/status' && typeof payload.running === 'boolean') {
+      const statusRunning = payload.running
+      this.sessions = this.sessions.map(row => row.sessionId === payload.sessionId ? { ...row, running: statusRunning } : row)
+      if (this.session?.sessionId === payload.sessionId) this.running = payload.running
+      if (!this.sessions.some(row => row.sessionId === payload.sessionId)) this.scheduleCatalogRefresh()
+      this.schedulePublish(); return
+    }
     if (payload.type === 'session/projection' && payload.sessionId && typeof payload.key === 'string') {
       const key = `${payload.sessionId}|${payload.key}`, previous = this.projectionSeq.get(key)
       if (payload.seq !== undefined && previous !== undefined && payload.seq < previous) return
@@ -2872,12 +3022,11 @@ export class HarmonyRuntime {
         const directArts = artifactsByToolId.get(item.id)
         const rowArtifacts = directArts && directArts.length > 0 ? directArts.map(artifactToRow) : undefined
         const updatedArts = item.turn ? updatedByTurn.get(item.turn) : undefined
-        const parsedReplies = (item.state === 'finished')
-          ? parseBotReplies(item.resultDetail?.text)
-          : undefined
+        const cachedReplies = this.groupRows.get(item.id)?.rows
+        const parsedReplies = cachedReplies?.length ? cachedReplies : item.state === 'finished' ? parseBotReplies(item.resultDetail?.text) : undefined
         const botReplies: BotReplyRow[] | undefined = (parsedReplies && parsedReplies.length > 0)
           ? parsedReplies.map(r => ({
-              name: text(r.name) || (r.kind === 'user' ? '你的回答' : (strings.bots.title ?? '智能体')),
+              name: [text(r.name) || (r.kind === 'user' ? '你的回答' : (strings.bots.title ?? '智能体')), typeof r.time === 'number' ? botMessageClock(r.time) : ''].filter(Boolean).join(' · '),
               color: text(r.color),
               text: text(r.text) || text(r.kind),
               kind: text(r.kind),
@@ -2906,7 +3055,7 @@ export class HarmonyRuntime {
       sessionKey, stagedFiles: this.stagedFiles.filter(row => row.scope === sessionKey).map(({scope,...row}) => row),
       terminalRaw: this.terminalRaw, terminalChunk: this.terminalChunk, terminalReset: this.terminalReset, terminalRenderRevision: this.terminalRenderRevision, botTarget: this.botTarget, botReadOnly: this.botState?.readOnly === undefined ? '' : this.botState.readOnly || strings.bots.sessionUnavailable, botView: this.botView, botExtras: [...this.botHistory, ...this.botExtras],
       botAsides: this.botState ? botObjects(this.botState.btwCards?.[this.botTarget]).filter(row => row.botId === this.botTarget && row.partId === this.session?.sessionId).map(row => ({ id: text(row.id), title: text(row.question), text: text(row.answer) || text(row.error), state: text(row.status) })) : [],
-      botReport: this.botReport, botModelOptions: this.botModelOptions, botEffortOptions: this.botEffortOptions,
+      botSettingsPage: this.botSettingsPage, botPrefs: JSON.stringify(this.botState?.prefs ?? {}), botReport: this.botReport, botModelOptions: this.botModelOptions, botEffortOptions: this.botEffortOptions,
       botDefinitions: this.botState?.bots ?? [], botRooms: this.botState?.rooms ?? [],
       botApprovals: (this.botState?.approvals ?? []).map(row => ({ id: text(row.id), title: text(row.tool), detail: text(row.reason), session: text(row.botId) })),
       botQuestions: Object.entries(this.botState?.questions ?? {}).flatMap(([session,row]) => {
@@ -2955,8 +3104,9 @@ export class HarmonyRuntime {
         path: '', name: '', kind: 'text', text: '', lines: 0, eof: true,
         data: '', mimeType: '', missingFonts: [], error: '', offset: 1,
       } : this.filePreview,
-      compactHistory: this.compactHistory, children: this.childRows(), info: this.info,
+      compactionStatus: this.compactionStatus, compactionCancellable: this.compactionSessionId === this.session?.sessionId, uploadProgress: this.uploadProgress, uploadMaxBytes: workspaceUploadMaxBytes(this.connection.getStats()?.mode), compactHistory: this.compactHistory, children: this.childRows(), info: this.info,
       languagePreference: this.languagePreference, themePreference: this.themePreference,
+      chatAppearance: JSON.stringify(this.chatAppearance), accentColor: CHAT_ACCENT_SWATCHES[this.chatAppearance.accent].light.primary, activityDockMode: this.activityDockMode,
       typographyDensity: this.typographyDensity,
       notificationsEnabled: this.notificationsEnabled,
       transportPreference: this.transportPreference,

@@ -3,7 +3,7 @@ import { prefRead, prefWriteStrict, vaultRead, vaultWrite } from './platform.js'
 
 const KEY = 'dsh.harmony.browse.key.v1'
 let writes = Promise.resolve()
-const sensitive = (name: string) => name === 'hostModes' || name === 'drafts' || name === 'prompts' || name.startsWith('view.') || name.startsWith('dshremote.harmony-browse')
+const sensitive = (name: string) => name.startsWith('compactions.') || name === 'hostModes' || name === 'drafts' || name === 'prompts' || name.startsWith('view.') || name.startsWith('dshremote.harmony-browse')
 async function key(): Promise<Uint8Array> {
   const saved = await vaultRead(KEY)
   if (saved) return fromBase64Url(saved)

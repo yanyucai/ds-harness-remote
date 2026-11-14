@@ -8,13 +8,20 @@ const generated = path.join(app, 'entry/src/main/ets/generated')
 const shared = Object.fromEntries(['crypto', 'protocol', 'client-core', 'webrtc'].map(name => [
   `@dsh-remote/${name}`, path.join(root, `packages/${name}/src/index.ts`),
 ]))
+const harmonyAdapters = { name: 'harmony-native-connection', setup(builder) {
+  builder.onResolve({ filter: /^expo-file-system(?:\/legacy)?$/ }, () => ({ path: path.join(app, 'core/optional-file-system.ts') }))
+  builder.onResolve({ filter: /(?:native-(?:chacha-poly|rtc-binary|websocket-binary)|compaction-store)$/ }, args => {
+    if (!args.importer.includes('/android/src/services/')) return
+    return { path: path.join(app, 'core', args.path.endsWith('compaction-store') ? 'compaction-store.ts' : 'native-connection.ts') }
+  })
+} }
 await build({
   entryPoints: [path.join(app, 'core/platform.ts')], outfile: path.join(generated, 'platform.js'),
   bundle: true, platform: 'neutral', format: 'esm', target: 'es2020', external: ['@ohos.*', '@hms.*'],
 })
 await build({
   entryPoints: [path.join(app, 'core/runtime.ts')], outfile: path.join(generated, 'runtime.js'),
-  bundle: true, platform: 'browser', format: 'esm', target: 'es2020', alias: shared,
+  plugins: [harmonyAdapters], bundle: true, platform: 'browser', format: 'esm', target: 'es2020', alias: shared,
   define: { WebSocket: 'harmonyPlatform.NativeWebSocket' },
   banner: { js: 'import * as harmonyPlatform from "./platform.js"; harmonyPlatform.installPlatform();' },
   external: ['@ohos.*', '@hms.*', './platform.js'],

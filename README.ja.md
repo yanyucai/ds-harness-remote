@@ -9,22 +9,20 @@
   <a href="README.zh.md">中文</a>
   &nbsp;·&nbsp;
   <strong>日本語</strong>
-  &nbsp;·&nbsp;
-  <a href="docs/README.md">ドキュメント</a>
-  &nbsp;·&nbsp;
-  <a href="https://dsh.r2049.cn/app">Web</a>
-  &nbsp;·&nbsp;
-  <a href="https://github.com/liguobao/ds-harness-remote/releases/latest">Android</a>
-  &nbsp;·&nbsp;
-  <a href="https://github.com/liguobao/ds-harness-remote/issues/20">iOS</a>
 </p>
 
 <p align="center">
-  <a href="apps/server/README.md">セルフホスティング</a>
-  &nbsp;·&nbsp;
-  <a href="https://www.npmjs.com/package/ds-harness-remote">npm</a>
-  &nbsp;·&nbsp;
-  <a href="https://dshfind.com/zh/plugins/liguobao/ds-harness-remote?ref=badge"><img src="https://dshfind.com/api/badge/liguobao/ds-harness-remote?metric=downloads&amp;lang=zh" alt="dshfind ダウンロード数" width="137" height="20" align="absmiddle"></a>
+  <a href="docs/README.md"><img src="https://img.shields.io/badge/%E3%83%89%E3%82%AD%E3%83%A5%E3%83%A1%E3%83%B3%E3%83%88-blue?logo=googledocs&amp;logoColor=white" alt="ドキュメント"></a>
+  <a href="https://dsh.r2049.cn/app"><img src="https://img.shields.io/badge/Web-4D6BFE?logo=googlechrome&amp;logoColor=white" alt="Web"></a>
+  <a href="https://github.com/liguobao/ds-harness-remote/releases/latest"><img src="https://img.shields.io/badge/Android-3DDC84?logo=android&amp;logoColor=white" alt="Android"></a>
+  <a href="https://github.com/liguobao/ds-harness-remote/issues/20"><img src="https://img.shields.io/badge/iOS-000000?logo=apple&amp;logoColor=white" alt="iOS"></a>
+</p>
+
+<p align="center">
+  <a href="https://www.npmjs.com/package/ds-harness-remote"><img src="https://img.shields.io/npm/v/ds-harness-remote?color=CB3837&amp;logo=npm" alt="npm"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue" alt="License: MIT"></a>
+  <a href="apps/server/README.md"><img src="https://img.shields.io/badge/%E3%82%BB%E3%83%AB%E3%83%95%E3%83%9B%E3%82%B9%E3%83%86%E3%82%A3%E3%83%B3%E3%82%B0-Docker-2496ED?logo=docker&amp;logoColor=white" alt="セルフホスティング"></a>
+  <a href="https://dshfind.com/ja/plugins/liguobao/ds-harness-remote?ref=badge"><img src="https://dshfind.com/api/badge/liguobao/ds-harness-remote?metric=downloads&amp;lang=ja" alt="dshfind ダウンロード数"></a>
 </p>
 
 ## 一度つなげば、いつでも使える
@@ -35,7 +33,7 @@ Harness は作業用パソコン上で動作し続け、ワークスペース、
 
 DeepSeek Harness デスクトップ版に対応しています。最新リリースをインストールしてください。
 
-`ds-harness-remote@0.6.3`
+`ds-harness-remote@0.6.5`
 
 ## 主な機能
 
@@ -46,42 +44,21 @@ DeepSeek Harness デスクトップ版に対応しています。最新リリー
 - P2P 接続を優先し、世界各地の TURN 中継ノードを利用できます。必要に応じて複数の Server Relay にフォールバックします。
 - ネイティブの Harness サイドバーから、ワークスペースのファイル、読み取り専用プレビュー、リモートターミナル、許可されたローカル開発サービスのプレビューにアクセスできます。
 - Remote Tool のコンテキスト注入により、Host とワークスペースの検出、Harness セッションの作成・管理、履歴の読み取り、実行待機、中断要求、許可されたファイルの転送が可能です。[詳細](packages/plugin/README.md#remote-agent-tools)。
-- DeepSeek Harness に加え、ACP 連携を通じて Codex、Cursor、Google Antigravity、Pi、OpenCode、Claude Code、Hermes Agent などのネイティブワークスペースを利用でき、リモートファイル閲覧やターミナルにも対応します。
+- DeepSeek Harness に加え、ACP 連携を通じて Codex、Cursor、Google Antigravity、Pi、OpenCode、Claude Code、Harness Agent などのネイティブワークスペースを利用でき、リモートファイル閲覧やターミナルにも対応します。
 - Android、iOS、Web、ネイティブ DSH 向けのクライアントを提供しています。
 - 複数のクライアントから同じ Harness Host に同時接続でき、RPC 呼び出しとストリームは接続ごとに分離されます。
-
-## 目次
-
-- [一度つなげば、いつでも使える](#一度つなげばいつでも使える)
-- [主な機能](#主な機能)
-- [対応クライアント](#対応クライアント)
-- [インストール](#インストール)
-- [クイックスタート](#クイックスタート)
-- [スクリーンショット](#スクリーンショット)
-- [仕組み](#仕組み)
-- [実験的な ACP ワークスペース](#実験的な-acp-ワークスペース)
-- [エンドツーエンド暗号化](#エンドツーエンド暗号化)
-- [ネットワークと通信方式](#ネットワークと通信方式)
-- [セキュリティ](#セキュリティ)
-- [よくある質問](#よくある質問)
-- [ドキュメント](#ドキュメント)
-- [関連リンク](#関連リンク)
-- [Star History](#star-history)
-- [プロジェクトの位置づけと商標](#プロジェクトの位置づけと商標)
-- [ライセンス](#ライセンス)
 
 ## 対応クライアント
 
 | クライアント | 形式 | 状態 | 備考 |
 | --- | --- | --- | --- |
-| DSH Desktop プラグイン | Remote サイドバー | 対応 | `ds-harness-remote@0.6.3` をインストールします。このパソコンを Host としても利用できます |
+| DSH プラグイン | Remote サイドバー | 対応 | 他のデバイスを操作する側にも、操作される Host 側にも自由に使えます！ |
 | Web | ブラウザーページ | 対応 | [https://dsh.r2049.cn](https://dsh.r2049.cn) を開きます。ネイティブの Harness UI を再利用します |
 | Android | ネイティブアプリ | 対応 | [Releases](https://github.com/liguobao/ds-harness-remote/releases/latest) から APK をダウンロードできます。[Android ガイド](apps/android/README.md)を参照してください |
-| DSH Go | ccch1mneyyy 氏の力作 | 対応済み | 詳細：[ccch1mneyyy/dsh-go: DeepSeek Harness の Android クライアント。スマートフォンで直接実行したり、パソコン上の DSH をリモート操作したりできます。](https://github.com/ccch1mneyyy/dsh-go) |
+| DSH Go | ccch1mneyyy 氏の力作 | 対応済み | 詳細：[ccch1mneyyy/dsh-go: スマートフォンで直接実行したり、パソコン上の DSH をリモート操作したりできます。](https://github.com/ccch1mneyyy/dsh-go) |
 | iOS | TestFlight ベータ | ベータ | 一般公開はまだ行っていません。[Issue #20](https://github.com/liguobao/ds-harness-remote/issues/20) を参照してください |
-| ブラウザー拡張機能 | Chrome | アクセス入口のみ | ログイン済み Web の認可を独立したデバイス認証情報に交換し、オンラインの Host を一覧表示して同一オリジンの Remote Web を開きます。拡張機能自体に会話 UI はありません |
 | dsh-TUI | ターミナル専用 CLI | 予定 | このリリースには統合を含まず、後続バージョンで個別に提供します。インストーラーが自動的に Web サービスを作成することはありません |
-| Linux | クラウドサーバー | 対応 | [公式サイト](https://dsh.r2049.cn/)にログインすると、設定不要のワンコマンド無人インストールを利用できます。 |
+| Linux | クラウドサーバー | 対応 | [公式サイト](https://dsh.r2049.cn/)にログインすると、ワンコマンドでインストールできます。 |
 
 複数のクライアントから同じ Host に同時接続できます。RPC 呼び出しとストリームは接続ごとに分離されます。
 
@@ -91,9 +68,11 @@ DeepSeek Harness デスクトップ版に対応しています。最新リリー
 
 DeepSeek Harness Desktop の **Extensions / Plugin management** を開き、npm からのインストールを選択して、次のパッケージを入力します。
 
-`ds-harness-remote@0.6.3`
+`ds-harness-remote@0.6.5`
 
-インストール後に Desktop を再起動してください。公式の `dsh` ランチャーでも、`dsh plugin --profile desktop add -w ds-harness-remote@0.6.3` を実行して指定バージョンをインストールできます。
+インストール後に Desktop を再起動してください。公式の `dsh` ランチャーでも、`dsh plugin --profile desktop add -w ds-harness-remote@0.6.5` を実行して指定バージョンをインストールできます。
+
+DSH 0.2.2 以降では、npm からインストールしたプラグインのバージョン確認とワンクリック更新をプラグイン管理画面から行えます。ホットアップデートに失敗した場合、DSH は旧バージョンへの復元を試みます。GitHub／ローカル link からのインストールは、先に npm に切り替える必要があります。[オンライン更新の説明](docs/installation.md#online-updates-in-dsh-plugin-management)を参照してください。
 
 ### Linux ワンコマンドインストール
 
@@ -142,8 +121,6 @@ DeepSeek Harness Desktop の **Extensions / Plugin management** を開き、npm 
 ### Android
 
 テキストや画像のプロンプト送信、モデルの切り替え、対応するワークスペースのファイルやターミナルへのアクセスが可能です。
-
-UI はシステム言語に従い、英語、簡体字・繁体字中国語、日本語、スペイン語、ドイツ語、フランス語に対応しています。言語設定で「More ...」をタップすると、すべての言語が表示されます。詳細は [Android ガイド](apps/android/README.md)を参照してください。
 
 <p align="center">
   <img src="docs/images/mobile-list.jpg" alt="オンラインとオフラインのパソコンを表示する Android クライアント" width="30%">
@@ -316,6 +293,33 @@ DS Bot は DeepSeek Harness（dsh）を bot として利用できるようにす
    <img alt="GitHub スター数の推移" src="https://api.star-history.com/chart?repos=liguobao/ds-harness-remote&type=date&legend=top-left" />
  </picture>
 </a>
+
+## コントリビューター
+
+`ds-harness-remote` は、オープンソースコミュニティの力によって育まれているプロジェクトです。優れたツールはコードだけで作られるのではなく、実際に試し、フィードバックを送り、アイデアを共有してくれるすべての人々と共に形作られると信じています。
+
+開発経験の有無にかかわらず、あらゆる形での参加を歓迎しています：
+
+- **Issue の起票**：不具合の報告、新機能の提案、操作性に関するアイデアなど、どんな気づきでも歓迎します。
+- **ドキュメントと多言語対応**：利用ガイドの改善、表現のブラッシュアップ、英語・中国語・日本語ドキュメントの同期支援。
+- **実機テストとフィードバック**：お使いの環境（Desktop / Web / Android）で動作を試し、実際の使用感を教えてください。
+- **コードの作成とレビュー**：バグ修正、新機能の実装、またはコミュニティから寄せられた Pull Request のレビュー。
+
+<p align="center">
+  <a href="https://github.com/liguobao/ds-harness-remote/graphs/contributors">
+    <img src="https://contrib.rocks/image?repo=liguobao/ds-harness-remote&max=30" alt="コントリビューター一覧" />
+  </a>
+</p>
+
+<p align="center">
+  <em>このプロジェクトを支えてくださるすべての素晴らしいコントリビューターに、心から感謝申し上げます！</em>
+</p>
+
+## 接続のトラブルシューティング
+
+Android：問題を再現した後、**設定 → 診断 → 接続ログをエクスポート** を開き、保存先のフォルダーを選んで `.txt` ファイルを保存します。ログには現在のアプリプロセスの起動以降、直近 500 件の接続診断が保持されます。アプリを再起動すると消去され、認証情報や会話内容は含まれません。
+
+Host：**プラグイン → Remote 設定** で **Debug ログ** を有効にします。設定は即座に反映され、保存されます。調査後は無効にしてください（`info` レベルに戻ります）。ログには `[ds-harness-remote]` の接頭辞が付き、Desktop では `desktop.log` で確認できます。手動設定では `logLevel: debug` を指定できます。
 
 ## プロジェクトの位置づけと商標
 

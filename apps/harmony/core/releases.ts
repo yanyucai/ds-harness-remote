@@ -1,4 +1,4 @@
-export const HARMONY_VERSION = '0.6.3-harmony.29'
+export const HARMONY_VERSION = '0.6.5'
 export const RELEASE_URL = 'https://github.com/liguobao/ds-harness-remote/releases/latest'
 export async function latestRelease(signal: AbortSignal): Promise<string> {
   const response = await fetch('https://api.github.com/repos/liguobao/ds-harness-remote/releases/latest', {

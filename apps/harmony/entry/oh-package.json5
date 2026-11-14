@@ -1,6 +1,6 @@
 {
   "name": "entry",
-  "version": "0.5.23",
+  "version": "0.6.5",
   "description": "DSH Remote Entry HAP",
   "main": "src/main/ets/entryability/EntryAbility.ets",
   "author": "liguobao",

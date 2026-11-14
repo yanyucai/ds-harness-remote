@@ -1,5 +1,5 @@
 import { runScenarios, scenarioName } from '../../../scripts/test-scenarios.mjs'
-import { mkdtemp, mkdir, realpath, rm, symlink } from 'node:fs/promises'
+import { mkdtemp, mkdir, realpath, rm, symlink, utimes, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -14,7 +14,7 @@ import {
   CODEX_UNMATERIALIZED_THREAD_MESSAGE,
   CodexAppServerError,
 } from '../src/codex/app-server.js'
-import { CodexRemoteDomain } from '../src/codex/domain.js'
+import { CodexRemoteDomain, codexBinaryCandidates } from '../src/codex/domain.js'
 import type { SafeLogger } from '../src/logging.js'
 
 const cleanup: string[] = []
@@ -940,6 +940,63 @@ describe('CodexRemoteDomain', () => {
     await domain.close()
   })
 
+  it('fails silent turns after the watchdog timeout and releases the writer lease', async () => {
+    const { root } = await directories()
+    const app = new FakeAppServer(root)
+    const domain = new CodexRemoteDomain(
+      { enabled: true, binary: 'codex' },
+      logger(),
+      () => app,
+      [1_000],
+      50,
+    )
+    await domain.start()
+    const frames: Array<{ event: string; data: unknown }> = []
+    const owner = domain.createPeer(
+      { connectionId: 'connection-1', peerDeviceId: 'peer-1' },
+      async (event, data) => { frames.push({ event, data }) },
+    )!
+    const waiter = domain.createPeer(
+      { connectionId: 'connection-2', peerDeviceId: 'peer-2' },
+      async () => undefined,
+    )!
+    await owner.openStream({ streamId: 'stream-1', threadId: 'allowed-thread' })
+    await owner.call({
+      method: 'turn/start',
+      params: { threadId: 'allowed-thread', input: [{ type: 'text', text: 'Hello' }] },
+    })
+    await expect(waiter.call({
+      method: 'turn/start',
+      params: { threadId: 'allowed-thread', input: [{ type: 'text', text: 'Compete' }] },
+    })).rejects.toMatchObject({ code: 'CODEX_TURN_OWNED' })
+
+    await vi.waitFor(() => {
+      const completed = frames.find(frame => frame.event === 'codex.app.frame'
+        && isRecord(frame.data)
+        && isRecord(frame.data.frame)
+        && frame.data.frame.method === 'turn/completed')
+      expect(completed).toBeDefined()
+      const turn = isRecord(completed?.data)
+        && isRecord(completed.data.frame)
+        && isRecord(completed.data.frame.params)
+        ? completed.data.frame.params.turn
+        : undefined
+      expect(turn).toMatchObject({
+        status: 'failed',
+        error: {
+          message: expect.stringContaining('timed out waiting for the App Server'),
+          codex_error_info: 'remote_turn_silence',
+        },
+      })
+    })
+
+    await expect(waiter.call({
+      method: 'turn/start',
+      params: { threadId: 'allowed-thread', input: [{ type: 'text', text: 'Retry after silence' }] },
+    })).resolves.toMatchObject({ turn: { id: 'turn-1' } })
+    await domain.close()
+  })
+
   it('isolates streams and approval handles to the active turn owner', async () => {
     const { root, outside } = await directories()
     const app = new FakeAppServer(root, outside)
@@ -1448,3 +1505,35 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 async function flush(): Promise<void> { await new Promise(resolve => setTimeout(resolve, 0)) }
+
+describe('codexBinaryCandidates', () => {
+  it('discovers the Windows Codex desktop build and falls back to the configured CLI', async () => {
+    const localAppData = await mkdtemp(join(tmpdir(), 'dsh-codex-bin-'))
+    cleanup.push(localAppData)
+    const binRoot = join(localAppData, 'OpenAI', 'Codex', 'bin')
+    const olderBuild = join(binRoot, 'aaaa1111')
+    const newerBuild = join(binRoot, 'bbbb2222')
+    await mkdir(olderBuild, { recursive: true })
+    await mkdir(newerBuild, { recursive: true })
+    const older = join(olderBuild, 'codex.exe')
+    const newer = join(newerBuild, 'codex.exe')
+    await writeFile(older, '')
+    await writeFile(newer, '')
+    const oldTime = new Date(Date.now() - 60_000)
+    await utimes(older, oldTime, oldTime)
+
+    const previous = process.env.LOCALAPPDATA
+    process.env.LOCALAPPDATA = localAppData
+    try {
+      // Newest build first, then the configured `codex` fallback.
+      expect(codexBinaryCandidates('codex', 'win32', join(localAppData, 'home'))).toEqual([newer, older, 'codex'])
+      // An explicitly configured binary is never replaced.
+      expect(codexBinaryCandidates('C:\\tools\\codex.exe', 'win32', '/unused')).toEqual(['C:\\tools\\codex.exe'])
+      // Non-Windows platforms keep the plain configured value when no desktop app matches.
+      expect(codexBinaryCandidates('codex', 'linux', '/unused')).toEqual(['codex'])
+    } finally {
+      if (previous === undefined) delete process.env.LOCALAPPDATA
+      else process.env.LOCALAPPDATA = previous
+    }
+  })
+})

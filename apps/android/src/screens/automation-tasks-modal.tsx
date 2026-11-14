@@ -2,7 +2,6 @@ import { useEffect, useMemo, useRef, useState, type RefObject } from 'react'
 import {
   ActivityIndicator,
   Dimensions,
-  Alert,
   Modal,
   Pressable,
   RefreshControl,
@@ -12,6 +11,7 @@ import {
   TextInput,
   View,
 } from 'react-native'
+import { Alert } from '../ui/alert'
 import {
   AlertCircle,
   ArrowLeft,
@@ -34,6 +34,7 @@ import {
 } from 'lucide-react-native'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { useAppStore } from '../state/store'
+import { useBotTeamStore } from '../state/bot-store'
 import type {
   RemoteSession,
   ScheduleCatalogEntry,
@@ -124,6 +125,7 @@ export function AutomationTasksModal({
   const language = useAppStore(state => state.language)
   const sessionModels = useAppStore(state => state.sessionModels)
   const createSession = useAppStore(state => state.createSession)
+  const botTeamState = useBotTeamStore(state => state.state)
 
   const [search, setSearch] = useState('')
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all')
@@ -171,6 +173,7 @@ export function AutomationTasksModal({
       setFormMode(null)
       setEditSnapshot(null)
       setTimingDirty(false)
+      setSubmitting(false)
       formTokenRef.current++
     }
   }, [visible, isNonNativeBackend, loadTasks])
@@ -186,11 +189,38 @@ export function AutomationTasksModal({
   }, [selectedTask, sessions])
 
   const availableSessions = useMemo(() => {
-    return sessions.filter(s => {
+    const base = sessions.filter(s => {
       const b = s.backend ?? workspaces.find(w => w.sessionIds.includes(s.sessionId))?.backend
       return b === undefined || b === 'harness'
     })
-  }, [sessions, workspaces])
+    const seen = new Set(base.map(item => item.sessionId))
+    const botExtras: RemoteSession[] = []
+    for (const b of botTeamState?.bots ?? []) {
+      if (b.sessionId && !seen.has(b.sessionId)) {
+        seen.add(b.sessionId)
+        botExtras.push({
+          sessionId: b.sessionId,
+          title: `DS-Bot · ${b.name}`,
+          running: false,
+          blank: false,
+          updatedAt: Date.now(),
+        })
+      }
+    }
+    for (const r of botTeamState?.rooms ?? []) {
+      if (r.sessionId && !seen.has(r.sessionId)) {
+        seen.add(r.sessionId)
+        botExtras.push({
+          sessionId: r.sessionId,
+          title: `DS-Bot · ${r.name}`,
+          running: false,
+          blank: false,
+          updatedAt: Date.now(),
+        })
+      }
+    }
+    return [...botExtras, ...base]
+  }, [sessions, workspaces, botTeamState])
 
   const localizedWeekdays = useMemo(() => {
     try {
@@ -230,10 +260,21 @@ export function AutomationTasksModal({
   }, [tasks, search, statusFilter])
 
   /** Sessions without a human title carry the raw id as their title. */
-  const sessionLabel = (sessionId: string, title?: string | null): string =>
-    title !== undefined && title !== null && title.trim() !== '' && title !== sessionId
+  const sessionLabel = (sessionId: string, title?: string | null): string => {
+    if (botTeamState) {
+      const bot = botTeamState.bots.find(
+        b => b.sessionId === sessionId || (b.parts ?? []).includes(sessionId) || b.id === sessionId,
+      )
+      if (bot) return `DS-Bot · ${bot.name}`
+      const room = botTeamState.rooms.find(
+        r => r.sessionId === sessionId || (r.ownParts ?? []).includes(sessionId) || r.id === sessionId,
+      )
+      if (room) return `DS-Bot · ${room.name}`
+    }
+    return title !== undefined && title !== null && title.trim() !== '' && title !== sessionId
       ? title
       : sessionId.slice(-8)
+  }
 
   const [formModel, setFormModel] = useState('')
   const [formWorkspaceId, setFormWorkspaceId] = useState('')
@@ -465,6 +506,7 @@ export function AutomationTasksModal({
 
   const openCreateForm = () => {
     formTokenRef.current++
+    setSubmitting(false)
     setFormTitle('')
     setFormPrompt('')
     const defaultSid = (selectedSession && (selectedSession.backend === undefined || selectedSession.backend === 'harness'))
@@ -492,6 +534,7 @@ export function AutomationTasksModal({
 
   const openEditForm = (task: ScheduleCatalogEntry) => {
     formTokenRef.current++
+    setSubmitting(false)
     const expected = extractExpectedRecord(task)
     const tz = task.timeZone || Intl.DateTimeFormat().resolvedOptions().timeZone || 'Asia/Shanghai'
     setEditSnapshot({
@@ -582,6 +625,7 @@ export function AutomationTasksModal({
         let sid = targetSessionId
         if (formTargetMode === 'new') {
           const created = await createSession(formWorkspaceId || undefined)
+          if (formTokenRef.current !== currentToken) return
           sid = created ? useAppStore.getState().selectedSession?.sessionId ?? '' : ''
         }
         if (!sid) {
@@ -734,10 +778,15 @@ export function AutomationTasksModal({
     )
   }
 
+  const openingLinkedRef = useRef(false)
   const handleOpenLinkedSession = async () => {
-    if (!linkedSession) return
-    onClose()
-    await onOpenSession(linkedSession)
+    if (!linkedSession || openingLinkedRef.current) return
+    openingLinkedRef.current = true
+    try {
+      await onOpenSession(linkedSession)
+    } finally {
+      openingLinkedRef.current = false
+    }
   }
 
   const formatFrequency = (task: ScheduleCatalogEntry): string => {
@@ -811,8 +860,26 @@ export function AutomationTasksModal({
     return { absolute, relative: `(${relative})` }
   }
 
+  const handleRequestClose = () => {
+    if (isNonNativeBackend) {
+      onClose()
+      return
+    }
+    if (formMode !== null) {
+      formTokenRef.current++
+      setSubmitting(false)
+      setFormMode(null)
+      return
+    }
+    if (selectedTask !== undefined) {
+      setSelectedTaskId(null)
+      return
+    }
+    onClose()
+  }
+
   return (
-    <Modal visible={visible} animationType="slide" transparent={false} onRequestClose={onClose}>
+    <Modal visible={visible} animationType="slide" transparent={false} onRequestClose={handleRequestClose}>
       <View style={[styles.container, { paddingTop: insets.top, paddingBottom: insets.bottom }]}>
         {/* Unsupported Backend View */}
         {isNonNativeBackend ? (
@@ -852,6 +919,7 @@ export function AutomationTasksModal({
                 accessibilityLabel={strings.common.cancel}
                 onPress={() => {
                   formTokenRef.current++
+                  setSubmitting(false)
                   setFormMode(null)
                 }}
                 hitSlop={8}
@@ -1093,6 +1161,7 @@ export function AutomationTasksModal({
                 accessibilityRole="button"
                 onPress={() => {
                   formTokenRef.current++
+                  setSubmitting(false)
                   setFormMode(null)
                 }}
                 style={({ pressed }) => [styles.footerCancelBtn, pressed && styles.pressedBg]}

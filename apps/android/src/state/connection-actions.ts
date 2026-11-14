@@ -21,10 +21,12 @@ export function createConnectionActions({ get, set, runtime }: SessionAccess): P
       const generation = ++runtime.connectionGeneration
       ++runtime.sessionLoadGeneration
       runtime.sessionReadAbort?.abort()
+      runtime.clearHarnessCatalogSync()
       const memory = useBrowseMemory.getState()
       const scope = browseScope({...get(), selectedDevice: device})
       const cached = device.trusted ? memory.catalogs[scope] : undefined
       const sameHost = get().selectedDevice?.deviceId === device.deviceId
+      if (!sameHost) runtime.webRtcFallbackStreak = 0
       // reconnect() marks recovery before delegating here. A direct connect starts
       // a new usage lifecycle even when choosing the same Host again.
       const recovering = sameHost && get().connection.phase === 'reconnecting'
@@ -44,6 +46,7 @@ export function createConnectionActions({ get, set, runtime }: SessionAccess): P
         connectionProbeOrder: [],
         connectionNetworkDetails: undefined,
         hostDescriptor: undefined,
+        hostSessionEvents: false,
         codexAvailable: false,
         cursorAvailable: false,
         antigravityAvailable: false,
@@ -117,6 +120,7 @@ export function createConnectionActions({ get, set, runtime }: SessionAccess): P
               // Drop local stream handles so reconnect opens a fresh stream.
               void runtime.closeActiveCodexStream(false)
               void runtime.closeActiveCursorStream(false)
+              runtime.clearHarnessCatalogSync()
               if (get().connection.phase !== 'disconnected') {
                 ++runtime.connectionGeneration
                 ++runtime.sessionLoadGeneration
@@ -131,6 +135,7 @@ export function createConnectionActions({ get, set, runtime }: SessionAccess): P
                   connection: { phase: 'offline', stats: { mode: 'Disconnected', connected: false }, error: zhCN.runtime.hostClosed,
                     retryable: closeOptions?.retryable !== false },
                   connectionStage: undefined,
+                  hostSessionEvents: false,
                   codexAvailable: false,
                   cursorAvailable: false,
                   antigravityAvailable: false,
@@ -155,6 +160,7 @@ export function createConnectionActions({ get, set, runtime }: SessionAccess): P
         runtime.webRtcFallbackStreak = 0
         set({
           hostDescriptor,
+          hostSessionEvents: runtime.connection.hasSessionEvents(),
           codexAvailable: runtime.connection.hasCodex(),
           cursorAvailable: runtime.connection.hasCursor(),
           antigravityAvailable: runtime.connection.hasAntigravity(),
@@ -183,11 +189,23 @@ export function createConnectionActions({ get, set, runtime }: SessionAccess): P
           return false
         }
         const message = friendlyError(error)
+        const errorCode = error instanceof Error && typeof (error as Error & { code?: unknown }).code === 'string'
+          ? (error as Error & { code: string }).code
+          : undefined
+        const retryable = error instanceof Error && typeof (error as Error & { retryable?: unknown }).retryable === 'boolean'
+          ? (error as Error & { retryable: boolean }).retryable
+          : undefined
         // Failure inside transport negotiation means P2P/TURN could not
         // establish: remember relay-only so the automatic retry (and the next
         // manual attempt) skips the multi-second WebRTC wait entirely.
         set({
-          connection: { phase: 'offline', stats: { mode: 'Disconnected', connected: false }, error: message },
+          connection: {
+            phase: 'offline',
+            stats: { mode: 'Disconnected', connected: false },
+            error: message,
+            ...(errorCode !== undefined ? { errorCode } : {}),
+            ...(retryable !== undefined ? { retryable } : {}),
+          },
           connectionStage: undefined,
           ...(failedStage === 'transport' ? { relayOnlyUntil: Date.now() + RELAY_DOWNGRADE_MS } : {}),
           codexAvailable: false,
@@ -275,6 +293,7 @@ export function createConnectionActions({ get, set, runtime }: SessionAccess): P
       ++runtime.sessionLoadGeneration
       runtime.reconnectFlight = undefined
       runtime.clearPendingMuxFrames()
+      runtime.clearHarnessCatalogSync()
       await runtime.closeActiveCodexStream(false)
       await runtime.closeActiveCursorStream(false)
       await runtime.connection.close()
@@ -286,6 +305,7 @@ export function createConnectionActions({ get, set, runtime }: SessionAccess): P
         connectionNetworkDetails: undefined,
         selectedDevice: undefined,
         hostDescriptor: undefined,
+        hostSessionEvents: false,
         codexAvailable: false,
         cursorAvailable: false,
         antigravityAvailable: false,
@@ -317,9 +337,11 @@ export function createConnectionActions({ get, set, runtime }: SessionAccess): P
         runtime.flushPendingMuxFrames()
         ++runtime.sessionLoadGeneration
         runtime.clearPendingMuxFrames()
+        runtime.clearHarnessCatalogSync()
         set({
           connection: { phase: 'offline', stats: { mode: 'Disconnected', connected: false }, error: zhCN.runtime.networkUnavailable,
             ...(get().connection.retryable === false ? { retryable: false } : {}) },
+          hostSessionEvents: false,
           codexAvailable: false,
           busyAction: undefined,
           cursorAvailable: false,

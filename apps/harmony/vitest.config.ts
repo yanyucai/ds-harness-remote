@@ -4,9 +4,15 @@ const root = __dirname
 export default defineConfig({
   esbuild: { define: { WebSocket: 'harmonyPlatform.NativeWebSocket' } },
   resolve: { alias: {
+    './native-chacha-poly': path.resolve(root, 'core/native-connection.ts'),
+    './native-rtc-binary': path.resolve(root, 'core/native-connection.ts'),
+    './native-websocket-binary': path.resolve(root, 'core/native-connection.ts'),
+    './compaction-store': path.resolve(root, 'core/compaction-store.ts'),
     ...Object.fromEntries(['crypto', 'protocol', 'client-core', 'webrtc'].map(name => [`@dsh-remote/${name}`, path.resolve(root, `../../packages/${name}/src/index.ts`)])),
     '@ohos.security.cryptoFramework': path.resolve(root, 'tests/native/crypto.ts'),
     '@ohos.systemDateTime': path.resolve(root, 'tests/native/time.ts'),
+    '@ohos.file.fs': path.resolve(root, 'tests/native/fs.ts'),
+    'expo-file-system': path.resolve(root, 'core/optional-file-system.ts'),
     '@ohos.util': path.resolve(root, 'tests/native/util.ts'),
     '@ohos.url': path.resolve(root, 'tests/native/url.ts'),
     '@ohos.net.webSocket': path.resolve(root, 'tests/native/socket.ts'),

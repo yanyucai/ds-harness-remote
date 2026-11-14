@@ -3,6 +3,7 @@ import { loadWorkspacePreview } from '../services/workspace-file-preview'
 import type { RemoteSession } from '../types'
 import { create } from 'zustand'
 import { getActiveLanguage } from '../locales/i18n'
+import { DEFAULT_CHAT_APPEARANCE } from '../ui/theme'
 import { createAccountActions } from './account-actions'
 import { createConnectionActions } from './connection-actions'
 import { createPreferenceActions } from './preference-actions'
@@ -24,7 +25,8 @@ const runtime: SessionRuntime = new SessionRuntime({
 export const requireProxy = () => runtime.connection.requireProxy()
 export const requireSessionTools = (sessionId?: string) => runtime.connection.requireSessionTools(sessionId)
 export const requireBotClient = () => runtime.connection.requireBotClient()
-export const requireConnectionRpc = () => (method: string, params: unknown, signal?: AbortSignal) => runtime.connection.rpc(method, params, signal)
+export const requireConnectionRpc = () => runtime.connection.createRpcCaller()
+export const getConnectionGeneration = () => runtime.connectionGeneration
 
 export const stopConnectionRecovery = () => runtime.connection.stopRecovery().catch(() => undefined)
 
@@ -34,7 +36,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   ...createPromptActions({ set, get, runtime }),
   ...createSessionEventActions({ set, get, runtime }),
   ...createAccountActions({ set, get }),
-  ...createPreferenceActions({ set, get }),
+  ...createPreferenceActions({ set, get, runtime }),
   ...createScheduleActions({
     set,
     get,
@@ -50,6 +52,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   devices: [],
   connection: disconnected,
   connectionProbeOrder: [],
+  hostSessionEvents: false,
   codexAvailable: false,
   cursorAvailable: false,
   antigravityAvailable: false,
@@ -89,6 +92,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   compactHistory: false,
   themePreference: 'system',
   typographyDensity: 'compact',
+  chatAppearance: { ...DEFAULT_CHAT_APPEARANCE },
+  activityDockMode: 'compact',
   statusBarVisible: true,
   defaultPermissionPreset: 'default',
   authPhase: 'idle',

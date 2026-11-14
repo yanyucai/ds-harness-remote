@@ -1,8 +1,8 @@
 # DSH Remote 鸿蒙原生移植预览版
 
-当前版本 **0.6.3-harmony.30 / 6831**，比较基准为上游 Android main `24160bd52e070f55e4e5a949d111644ca4a9a763`。这是 HarmonyOS NEXT Stage / ArkUI 客户端，复用共享协议、加密、连接和平台独立逻辑。
+当前版本 **0.6.5 / 6832**，比较基准为上游 Android main `936d107b918704a91df9988e58991f5076e075c2`（Android `0.6.5` / `versionCode 72`）。这是 HarmonyOS NEXT Stage / ArkUI 客户端，复用共享协议、加密、连接和平台独立逻辑。鸿蒙 `versionName` 与 Android 对齐；内部版本继续单调递增，确保覆盖安装不会因版本码回退被拒绝。
 
-本版修复部分 HarmonyOS 设备缺少 `performance.now()` 导致无法连接主机的问题，使用系统单调时钟补足共享连接代码所需接口。更新后已在目标设备确认 Noise IK 局域网连接、工作区/会话读取、刷新与短时后台返回；97 项核心测试、SDK 检查和原生构建通过。完整范围及剩余边界见 [对齐记录](../../docs/harmonyos-alignment-0.6.3.md)。后台持续任务、通知和安装更新使用鸿蒙方案，不能宣称与 Android 全部等效或永久保活。
+本版合入最新 Android 共享协议、连接、自动恢复、WebRTC/中继、流式文件上传和压缩逻辑，并补齐普通文件与视频选择、上传进度与取消、异步 `/compact` 跟踪、会话目录实时同步、Bot 实时卡片与状态、DS-Bot 设置入口、聊天外观和活动显示模式。原生 ArkUI 页面继续复用平台无关逻辑，文件、通知、后台任务、终端、WebView 和选择器使用 HarmonyOS 系统能力。完整范围和剩余边界见 [对齐记录](../../docs/harmonyos-alignment-0.6.3.md)。
 
 为与已安装的 Android 版并存，鸿蒙版独立包名为 `io.github.dshremote.harmony`，桌面名称为「DSH Remote 鸿蒙」。Android 版仍使用上游包名 `io.github.liguobao.dshremote`。
 
@@ -38,7 +38,7 @@
 
 以上是源码实现范围。已验证真机安装、已有授权恢复、主机加密连接和工作区列表；扫码、相册、真实模型回复、各 ACP/CodeX 后端，以及本版新增的抽屉、下钻面板与自动连接行为仍需设备验收。
 
-本版未移植：P2P/WebRTC/TURN、后台保活/自动重连、浏览器 OAuth 回跳/账号注册、文件树/预览/交互终端、工具访问预设入口、Bot/Intelligent UI、插件管理、自动化任务管理、加密草稿与阅读位置、多语言与主题设置、完整平板双栏。新建远端工作区当前仅开放 Harness。CodeX 历史当前整页读取，尚未接入分块分页界面。Cursor 历史受 Host 上游可提供能力限制。
+当前主要边界：浏览器 OAuth 回跳仍依赖鸿蒙系统浏览器与签名后的 URI 配置；通知、长时锁屏保活、文件落盘、WebRTC/TURN 和逐后端交互仍需目标设备逐项验收。Host 未公布的插件能力、provider 授权和动态诊断内容按真实能力显示，不做本地伪造。大文件上传仍受 Host 上限、手机内存和系统选择器约束。
 
 ## 源码结构
 
@@ -80,6 +80,6 @@ hdc install entry/build/default/outputs/default/entry-default-signed.hap
 
 本次验证详情及验收清单见 [docs/harmonyos.md](../../docs/harmonyos.md)。
 
-2026-11-06 真机验收补充：harmony.29 已验证启动/自动 LAN 连接、工作区层级与长路径、持续任务状态、更新查询、系统应用详情跳转及文件下载选择器取消；修复旧 settings action 无匹配错误。文件落盘、真实通知、长期锁屏和逐后端尚未完成验收，详见 docs/harmonyos-alignment-0.6.3.md。
+2026-11-14 对齐状态：源码已合入 Android 0.6.5 主分支并完成鸿蒙平台适配；自动化与原生 HAP 构建结果记录在 [对齐记录](../../docs/harmonyos-alignment-0.6.3.md)。设备验收仍以实际连接、文件操作和各后端交互为准。
 
 公开源码使用通用包名 `io.github.dshremote.harmony`。既有设备上的私人开发签名包使用独立包名；从公开源码构建时应自行配置包名与签名，不能据此覆盖私人签名安装。

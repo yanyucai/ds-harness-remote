@@ -21,6 +21,7 @@ import {
   createHermesSession,
   createPiSession,
   cursorNativeId,
+  finalizeAssistantLive,
   foldAcpHistory,
   mergeAcpHistoryAndLive,
 } from '../services/cursor'
@@ -30,18 +31,18 @@ import { readClaudeHistory, selectClaudeModel } from '../services/claude'
 import { loadHermesCatalog, mergeHermesCatalog, readHermesHistory, selectHermesModel } from '../services/hermes'
 import { readPiHistory, selectPiModel } from '../services/pi'
 import { saveCodexPermissionPreset } from '../services/storage'
-import { browseKey, browseScope, updateBrowseEntry, useBrowseMemory } from '../services/browse-memory'
+import { browseKey, browseScope, getCachedSessionMessages, saveSessionMessagesSnapshot, updateBrowseEntry, useBrowseMemory } from '../services/browse-memory'
 import type { RemoteSession } from '../types'
 import { loadSavedCodexPermissions, withBestCodexPermission, withCodexPermissionState } from './codex-session-state'
 import { foldHistory, settleTurnItems } from './event-reducer'
-import { inboxRpcIds, mergeHistoryAndLive, oldestSeq, prependHistory, reconcileDeliveryStates } from './message-helpers'
+import { inboxRpcIds, mergeHistoryAndLive, oldestSeq, prependHistory, reconcileDeliveryStates, reconcileUserQuestionsProjection } from './message-helpers'
 import type { SessionAccess } from './session-runtime'
 import { applyFeedback, latestHistoryLifecycle, record, withActiveCodexTurn } from './session-state'
 import type { AppState } from './store-state'
 
 /** Session actions use the store's single connection/session runtime. */
 export function createSessionActions({ get, set, runtime }: SessionAccess): Pick<AppState,
-  'refreshSessionStatus' | 'openSession' | 'forkChatMessage' | 'quoteChatMessage' | 'rateMessage' | 'createSession' | 'forkSession' | 'archiveSession' | 'unarchiveSession' | 'pinSession' | 'unpinSession' | 'renameSession' | 'selectModel' | 'selectPermission' | 'loadAgentPresets' | 'selectAgentPreset' | 'loadOlderHistory'> {
+  'refreshSessionStatus' | 'syncHarnessCatalog' | 'openSession' | 'forkChatMessage' | 'quoteChatMessage' | 'rateMessage' | 'createSession' | 'forkSession' | 'archiveSession' | 'unarchiveSession' | 'pinSession' | 'unpinSession' | 'renameSession' | 'selectModel' | 'selectPermission' | 'loadAgentPresets' | 'selectAgentPreset' | 'loadOlderHistory'> {
   const isHarnessBackend = (backend?: RemoteSession['backend']) =>
     (backend ?? 'harness') === 'harness'
 
@@ -52,6 +53,7 @@ export function createSessionActions({ get, set, runtime }: SessionAccess): Pick
   }
 
   return {
+    /** Pull full `session/list` after a real catalog-change hint (or manual refresh). */
     async refreshSessionStatus() {
       if (get().connection.phase !== 'connected') return
       try {
@@ -88,8 +90,8 @@ export function createSessionActions({ get, set, runtime }: SessionAccess): Pick
           const selectedFresh = state.selectedSession === undefined
             ? undefined
             : rows.find(item => item.sessionId === state.selectedSession?.sessionId)
-          // Preserve array identity when nothing moved: the 8s refresh otherwise
-          // hands consumers a fresh `sessions` reference and re-runs their memos.
+          // Preserve array identity when nothing moved so consumers do not
+          // re-run memos on a no-op explicit refresh.
           return {
             sessionLifecycles: marks,
             ...(changed || added.length > 0
@@ -102,6 +104,63 @@ export function createSessionActions({ get, set, runtime }: SessionAccess): Pick
           }
         })
       } catch { /* status refresh is best-effort */ }
+    },
+
+    /** Pull Harness workspaces + sessions after an event-driven membership change. */
+    async syncHarnessCatalog() {
+      if (get().connection.phase !== 'connected') return
+      const generation = runtime.connectionGeneration
+      const deviceId = get().selectedDevice?.deviceId
+      const { config, identity } = get()
+      let proxy: ReturnType<typeof runtime.connection.requireProxy>
+      try {
+        proxy = runtime.connection.requireProxy()
+      } catch {
+        return
+      }
+      const current = () => generation === runtime.connectionGeneration
+        && get().config === config
+        && get().identity === identity
+        && get().connection.phase === 'connected'
+        && get().selectedDevice?.deviceId === deviceId
+        && (() => { try { return runtime.connection.requireProxy() === proxy } catch { return false } })()
+      try {
+        const [workspaces, rows] = await Promise.all([proxy.workspaceList(), proxy.sessionList()])
+        if (!current()) return
+        set(state => {
+          const byId = new Map(rows.map(item => [item.sessionId, item]))
+          const marks: typeof state.sessionLifecycles = { ...state.sessionLifecycles }
+          for (const row of state.sessions) {
+            if ((row.backend ?? 'harness') !== 'harness') continue
+            const fresh = byId.get(row.sessionId)
+            if (fresh === undefined) continue
+            const entry = marks[row.sessionId]
+            const wasRunning = entry?.running ?? row.running
+            if (wasRunning === fresh.running) continue
+            marks[row.sessionId] = {
+              seq: entry?.seq ?? -1,
+              turn: entry?.turn,
+              running: fresh.running,
+              ...(fresh.running
+                ? { finished: undefined }
+                : { finished: entry?.finished === 'failed' ? 'failed' as const : 'completed' as const }),
+            }
+          }
+          const nonHarnessWorkspaces = state.workspaces.filter(item => (item.backend ?? 'harness') !== 'harness')
+          const nonHarnessSessions = state.sessions.filter(item => (item.backend ?? 'harness') !== 'harness')
+          const selectedFresh = state.selectedSession === undefined
+            ? undefined
+            : byId.get(state.selectedSession.sessionId)
+          return {
+            sessionLifecycles: marks,
+            workspaces: [...nonHarnessWorkspaces, ...workspaces.items],
+            sessions: [...nonHarnessSessions, ...rows],
+            archivedSessionIds: workspaces.archivedSessionIds,
+            ...(workspaces.pinnedSessionIds === undefined ? {} : { pinnedSessionIds: workspaces.pinnedSessionIds }),
+            ...(selectedFresh === undefined ? {} : { selectedSession: selectedFresh }),
+          }
+        })
+      } catch { /* background catalog sync is best-effort */ }
     },
 
     async openSession(session) {
@@ -120,6 +179,39 @@ export function createSessionActions({ get, set, runtime }: SessionAccess): Pick
       const hostId = get().selectedDevice?.deviceId ?? ''
       const pageScope = browseScope(get()) + (get().compactHistory ? ':compact' : ':full')
       const pageKey = (id: string) => browseKey(pageScope, id)
+      const canPersistSnapshot = () => Boolean(get().config?.baseUrl && get().selectedDevice?.identityKey)
+      const memoryScope = browseScope(get())
+      const cachedSnapshot = canPersistSnapshot() ? getCachedSessionMessages(memoryScope, session.sessionId) : undefined
+      const inMemoryMessages = get().messages[session.sessionId]
+      const preservedMessages = (inMemoryMessages && inMemoryMessages.length > 0)
+        ? inMemoryMessages
+        : (cachedSnapshot && cachedSnapshot.length > 0 ? cachedSnapshot : undefined)
+
+      if (get().connection.phase !== 'connected') {
+        set(state => ({
+          busyAction: undefined,
+          selectedSession: session,
+          sessions: state.sessions.some(item => item.sessionId === session.sessionId)
+            ? state.sessions
+            : [session, ...state.sessions],
+          ...(preservedMessages !== undefined ? {
+            messages: {
+              ...state.messages,
+              [session.sessionId]: preservedMessages,
+            }
+          } : {}),
+          error: undefined,
+          historyLoadingOlder: false,
+          sessionModels: undefined,
+          modelSelecting: false,
+          historyHasMore: false,
+          oldestLoadedSeq: undefined,
+        }))
+        void runtime.rememberRecentWorkspace(session).catch(() => undefined)
+        set(state => ({ currentWorkSessionIds: [...state.currentWorkSessionIds.filter(id => id !== session.sessionId), session.sessionId].slice(-32) }))
+        return true
+      }
+
       const previous = get().selectedSession
       if (!historyModeChanged && previous !== undefined && !get().busyAction?.startsWith('session:') && !get().historyLoadingOlder) {
         runtime.browsePages.set(pageKey(previous.sessionId), {
@@ -133,8 +225,8 @@ export function createSessionActions({ get, set, runtime }: SessionAccess): Pick
       const browseLive = (items: import('../types').ChatItem[], existing: import('../types').ChatItem[]) => {
         contiguousCache = items.some(item => cachedIds.has(item.id))
         // When the tail no longer overlaps, pagination starts from the new tail.
-        // Retain live/optimistic rows, not a misleading gap in cached history.
-        return contiguousCache ? existing : existing.filter(item => !cachedIds.has(item.id) || item.id.startsWith('local:'))
+        // Retain live/optimistic rows and pending approvals/questions, not a misleading gap in cached history.
+        return contiguousCache ? existing : existing.filter(item => !cachedIds.has(item.id) || item.id.startsWith('local:') || item.kind === 'approval' || item.kind === 'question')
       }
       runtime.sessionReadAbort?.abort()
       const readAbort = new AbortController()
@@ -162,11 +254,15 @@ export function createSessionActions({ get, set, runtime }: SessionAccess): Pick
       set(state => ({
         busyAction: `session:${session.sessionId}`,
         codexReadySessionId: undefined,
-        ...((session.backend === 'codex' || session.backend === undefined || session.backend === 'harness') ? {
-          selectedSession: session,
-          historyHasMore: cachedPage?.historyHasMore ?? false,
-          oldestLoadedSeq: cachedPage?.oldestLoadedSeq,
+        selectedSession: session,
+        ...(preservedMessages !== undefined ? {
+          messages: {
+            ...state.messages,
+            [session.sessionId]: preservedMessages,
+          }
         } : {}),
+        historyHasMore: cachedPage?.historyHasMore ?? false,
+        oldestLoadedSeq: cachedPage?.oldestLoadedSeq,
         error: undefined,
         historyLoadingOlder: false,
         sessionModels: undefined,
@@ -204,15 +300,19 @@ export function createSessionActions({ get, set, runtime }: SessionAccess): Pick
             ...read.session,
             ...(history.activeTurnId === undefined ? {} : { running: true }),
           }
-          set(state => ({
-            selectedSession: nextSession,
-            sessions: state.sessions.map(item => item.sessionId === session.sessionId ? nextSession : item),
-            messages: {
-              ...state.messages,
-              [session.sessionId]: mergeHistoryAndLive(items, browseLive(items, state.messages[session.sessionId] ?? [])),
-            },
-            ...pageState(history.hasMore, oldestSeq(history.events)),
-          }))
+          set(state => {
+            const codexMerged = mergeHistoryAndLive(items, browseLive(items, state.messages[session.sessionId] ?? []))
+            if (canPersistSnapshot()) saveSessionMessagesSnapshot(memoryScope, session.sessionId, codexMerged)
+            return {
+              selectedSession: nextSession,
+              sessions: state.sessions.map(item => item.sessionId === session.sessionId ? nextSession : item),
+              messages: {
+                ...state.messages,
+                [session.sessionId]: codexMerged,
+              },
+              ...pageState(history.hasMore, oldestSeq(history.events)),
+            }
+          })
           let streamClosed = false
           const stream = await client.subscribe(
             threadId,
@@ -247,14 +347,18 @@ export function createSessionActions({ get, set, runtime }: SessionAccess): Pick
           await runtime.closeActiveCodexStream()
           await runtime.closeActiveCursorStream()
           if (!current()) return
+          const existingMessages = get().messages[session.sessionId] ?? []
+          // Retire or drop dead in-flight streaming chunks from the prior connection
+          const cleanExisting = existingMessages.filter(item => !(item.kind === 'message' && (item.streaming || item.id === 'cursor-assistant-live' || item.id === 'cursor-user-live')))
+          const initialAcpIds = new Set(cleanExisting.map(item => item.id))
           const hasHistory = session.backend === 'antigravity' || session.backend === 'pi' || session.backend === 'opencode' || session.backend === 'claude' || session.backend === 'hermes'
-          // History replaces the previous connection's projection. Start the new
-          // subscription on an empty projection, so only this subscription's
-          // deltas survive the load (and stale bubbles cannot suppress catchUp).
+          // History replaces the previous connection's projection. Retain existing displayed
+          // messages so opening or reconnecting does not flash white, then in-place merge.
           set(state => ({
             selectedSession: session, sessionModels: undefined, historyHasMore: false,
-            ...(hasHistory && state.messages[session.sessionId] !== undefined
-              ? { messages: { ...state.messages, [session.sessionId]: [] } } : {}),
+            ...(cleanExisting.length !== existingMessages.length
+              ? { messages: { ...state.messages, [session.sessionId]: cleanExisting } }
+              : {}),
           }))
           const acpClient = session.backend === 'claude' ? runtime.connection.requireClaude() : session.backend === 'hermes' ? runtime.connection.requireHermes() : session.backend === 'opencode'
             ? runtime.connection.requireOpencode()
@@ -274,22 +378,28 @@ export function createSessionActions({ get, set, runtime }: SessionAccess): Pick
           ])
           if (!current()) return
           const items = foldAcpHistory(history, session.sessionId)
-          set(state => ({
-            selectedSession: state.selectedSession?.sessionId === session.sessionId ? state.selectedSession : session,
-            sessions: state.sessions.some(item => item.sessionId === session.sessionId)
-              ? state.sessions
-              : [session, ...state.sessions],
-            messages: {
-              ...state.messages,
-              [session.sessionId]: hasHistory
-                ? mergeAcpHistoryAndLive(items, state.messages[session.sessionId] ?? [])
-                : mergeHistoryAndLive(items, state.messages[session.sessionId] ?? []),
-            },
-            sessionModels: undefined,
-            historyHasMore: false,
-            oldestLoadedSeq: undefined,
-            busyAction: undefined,
-          }))
+          set(state => {
+            const currentMessages = state.messages[session.sessionId] ?? []
+            const liveDeltas = currentMessages.filter(item => !initialAcpIds.has(item.id) || item.id.startsWith('local:') || item.kind === 'approval' || item.kind === 'question')
+            const merged = hasHistory
+              ? mergeAcpHistoryAndLive(items, liveDeltas)
+              : mergeHistoryAndLive(items, liveDeltas)
+            if (canPersistSnapshot()) saveSessionMessagesSnapshot(memoryScope, session.sessionId, merged)
+            return {
+              selectedSession: state.selectedSession?.sessionId === session.sessionId ? state.selectedSession : session,
+              sessions: state.sessions.some(item => item.sessionId === session.sessionId)
+                ? state.sessions
+                : [session, ...state.sessions],
+              messages: {
+                ...state.messages,
+                [session.sessionId]: merged,
+              },
+              sessionModels: undefined,
+              historyHasMore: false,
+              oldestLoadedSeq: undefined,
+              busyAction: undefined,
+            }
+          })
           if (session.backend === 'antigravity') void runtime.refreshAntigravityModels(session, current)
           if (session.backend === 'pi') void runtime.refreshPiModels(session, current)
           if (session.backend === 'opencode') void runtime.refreshOpencodeModels(session, current)
@@ -326,6 +436,7 @@ export function createSessionActions({ get, set, runtime }: SessionAccess): Pick
           // reconciliation marks, never deletes: a late `user/message` echo still
           // replaces the row by requestRpcId, so a misjudgment self-heals.
           const inboxSnapshot = latest.projections?.values?.inbox
+          const userQuestionsSnapshot = latest.projections?.values?.userQuestions
           const merged = applyFeedback(mergeHistoryAndLive(items, browseLive(items, state.messages[session.sessionId] ?? []), history.throughSeq), ratings)
           const reconciled = inboxSnapshot === undefined ? merged : reconcileDeliveryStates(
             merged,
@@ -333,8 +444,31 @@ export function createSessionActions({ get, set, runtime }: SessionAccess): Pick
             new Set(items.flatMap(item => item.kind === 'message' && item.requestRpcId !== undefined ? [item.requestRpcId] : [])),
             runtime.connectionStartedAt,
           )
-          const restored = nextSession.running === false ? settleTurnItems(reconciled)
-            : authoritativeLifecycle?.turn === undefined ? reconciled : settleTurnItems(reconciled, undefined, authoritativeLifecycle.turn)
+          // A prompt acknowledged on this connection can still be missing from
+          // both history and the inbox (lost event after commit). Once the Host
+          // proves the session is idle and neither source knows the requestId,
+          // settle the optimistic row as unconfirmed instead of leaving the
+          // composer stuck on "sending" forever. Late echoes still replace it.
+          const historyRpcIds = new Set(items.flatMap(item => item.kind === 'message' && item.requestRpcId !== undefined ? [item.requestRpcId] : []))
+          const runningNow = nextSession.running === true || authoritativeLifecycle?.running === true
+          const unsettled = inboxSnapshot === undefined || runningNow ? reconciled : (() => {
+            const queuedRpcIds = inboxRpcIds(inboxSnapshot)
+            return reconciled.map(item => item.kind === 'message' && item.id.startsWith('local:')
+              && item.sendState === undefined && item.requestRpcId !== undefined
+              && !queuedRpcIds.has(item.requestRpcId) && !historyRpcIds.has(item.requestRpcId)
+              ? { ...item, sendState: 'unconfirmed' as const }
+              : item)
+          })()
+          const withQuestions = userQuestionsSnapshot === undefined
+            ? unsettled
+            : reconcileUserQuestionsProjection(unsettled, session.sessionId, userQuestionsSnapshot, inboxSnapshot)
+          const hasRunningAskUserTool = items.some(item => item.kind === 'tool' && item.state === 'running' && (item.toolKey ?? item.toolName) === 'ask_user_question')
+          const effectivelyRunning = nextSession.running || (authoritativeLifecycle === undefined && hasRunningAskUserTool)
+          const activeTurn = authoritativeLifecycle?.turn
+            ?? (effectivelyRunning ? [...items].reverse().find(item => item.turn !== undefined && item.turnEnd === undefined)?.turn : undefined)
+          const restored = effectivelyRunning === false ? settleTurnItems(withQuestions)
+            : activeTurn === undefined ? withQuestions : settleTurnItems(withQuestions, undefined, activeTurn)
+          if (canPersistSnapshot()) saveSessionMessagesSnapshot(memoryScope, session.sessionId, restored)
           return {
             selectedSession: nextSession,
             sessions: state.sessions.map(item => item.sessionId === session.sessionId ? nextSession : item),

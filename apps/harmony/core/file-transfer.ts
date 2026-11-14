@@ -1,3 +1,5 @@
+import fs from '@ohos.file.fs'
+import { uploadFileReaderToWorkspace, workspaceUploadMaxBytes, type RpcCaller } from '../../android/src/screens/chat-files'
 import { createNativeRpcId } from '../../android/src/services/rpc-id'
 export async function uploadFile(
   rpc: (method: string, args: unknown, signal?: AbortSignal) => Promise<unknown>,
@@ -25,4 +27,36 @@ export async function uploadFile(
       try { if(current()) await rpc('workspace.upload.abort',{sessionId,uploadId},control.signal) } catch {} finally { clearTimeout(timer) }
     }
   }
+}
+
+
+/** Keep native picker files on disk; only one negotiated chunk is read at a time. */
+export async function uploadNativeFile(rpc: RpcCaller, sessionId: string, name: string, uri: string,
+  current: () => boolean, signal: AbortSignal, mode?: string,
+  progress?: (bytes: number, total: number) => void): Promise<string> {
+  if (!uri.startsWith('file://')) throw new Error('请选择系统文件选择器中的文件。')
+  const file = await fs.open(uri, fs.OpenMode.READ_ONLY)
+  let handedOff = false
+  try {
+    const stat = await fs.stat(file.fd)
+    if (stat.size <= 0 || stat.size > workspaceUploadMaxBytes(mode)) throw new Error('文件超过当前传输通道的大小限制。')
+    const active = () => { signal.throwIfAborted(); if (!current()) throw new Error('会话已切换，附件上传已取消。') }
+    const guarded: RpcCaller = (method, args, abort) => { if (method === 'workspace.upload.abort') { if (!current()) throw new Error('上传连接已变化。') } else active(); return rpc(method, args, abort) }
+    guarded.supportsBinaryUpload = rpc.supportsBinaryUpload
+    handedOff = true
+    const result = await uploadFileReaderToWorkspace(guarded, sessionId, { id: '', name, uri, size: stat.size }, {
+      totalBytes: stat.size,
+      async read(offset, length) {
+        active()
+        const now = await fs.stat(file.fd)
+        if (now.size !== stat.size || now.mtime !== stat.mtime) throw new Error('上传期间文件发生变化，请重新选择。')
+        const buffer = new ArrayBuffer(length)
+        const count = await fs.read(file.fd, buffer, { offset, length })
+        active()
+        return new Uint8Array(buffer, 0, count)
+      },
+      close: () => fs.close(file.fd),
+    }, signal, progress)
+    active(); return result.path
+  } finally { if (!handedOff) await fs.close(file.fd) }
 }
