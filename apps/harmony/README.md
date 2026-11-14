@@ -1,8 +1,8 @@
 # DSH Remote 鸿蒙原生移植预览版
 
-当前版本 **0.6.3-harmony.29 / 6830**，比较基准为上游 Android main `24160bd52e070f55e4e5a949d111644ca4a9a763`。这是 HarmonyOS NEXT Stage / ArkUI 客户端，复用共享协议、加密、连接和平台独立逻辑。
+当前版本 **0.6.3-harmony.30 / 6831**，比较基准为上游 Android main `24160bd52e070f55e4e5a949d111644ca4a9a763`。这是 HarmonyOS NEXT Stage / ArkUI 客户端，复用共享协议、加密、连接和平台独立逻辑。
 
-**当前状态与验证边界以 [harmony.29 对齐记录](../../docs/harmonyos-alignment-0.6.3.md#harmony296830补齐本轮识别差距2026-11-06) 为准。** 本轮 96 项鸿蒙核心测试、54 项共享专项测试、SDK/ArkTS 构建和离线渲染检查通过，已覆盖安装到目标 HarmonyOS 测试设备；最新启动因锁屏被系统拒绝，尚未完成本轮真机验收。普通活动通知、后台持续任务和 HAP 更新使用鸿蒙方案，不能宣称与 Android 全部等效或永久保活。
+本版修复部分 HarmonyOS 设备缺少 `performance.now()` 导致无法连接主机的问题，使用系统单调时钟补足共享连接代码所需接口。更新后已在目标设备确认 Noise IK 局域网连接、工作区/会话读取、刷新与短时后台返回；97 项核心测试、SDK 检查和原生构建通过。完整范围及剩余边界见 [对齐记录](../../docs/harmonyos-alignment-0.6.3.md)。后台持续任务、通知和安装更新使用鸿蒙方案，不能宣称与 Android 全部等效或永久保活。
 
 为与已安装的 Android 版并存，鸿蒙版独立包名为 `io.github.dshremote.harmony`，桌面名称为「DSH Remote 鸿蒙」。Android 版仍使用上游包名 `io.github.liguobao.dshremote`。
 
