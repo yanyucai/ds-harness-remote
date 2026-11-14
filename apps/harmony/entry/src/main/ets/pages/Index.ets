@@ -3422,7 +3422,7 @@ struct Index {
               }.width('100%').padding(28)
             }
           }
-        }.layoutWeight(1).width('100%').padding({ bottom: 4 })
+        }.layoutWeight(1).width('100%').padding({ bottom: 16 })
         if (this.showWorkspaceCreator) {
           Row({ space: 8 }) {
             TextInput({ text: this.directory, placeholder: runtime.translate('Harness 新工作区的绝对路径') }).layoutWeight(1)
