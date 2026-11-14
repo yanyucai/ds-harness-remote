@@ -6,6 +6,7 @@ export default defineConfig({
   resolve: { alias: {
     ...Object.fromEntries(['crypto', 'protocol', 'client-core', 'webrtc'].map(name => [`@dsh-remote/${name}`, path.resolve(root, `../../packages/${name}/src/index.ts`)])),
     '@ohos.security.cryptoFramework': path.resolve(root, 'tests/native/crypto.ts'),
+    '@ohos.systemDateTime': path.resolve(root, 'tests/native/time.ts'),
     '@ohos.util': path.resolve(root, 'tests/native/util.ts'),
     '@ohos.url': path.resolve(root, 'tests/native/url.ts'),
     '@ohos.net.webSocket': path.resolve(root, 'tests/native/socket.ts'),

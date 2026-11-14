@@ -97,3 +97,9 @@ Intelligent UI 来源：dreamfarer-space/deepseek-harness-intelligent-ui，提�
 短时 Home 后返回约 31 秒，原会话与连接恢复；这不是长时锁屏保活结论。真实 Host 文件树加载成功，下载完成后系统 DocumentViewPicker 正常弹出，取消后显示“已取消保存”；未确认写入目标文件，文件落盘及字节一致性仍待验收。Chief 的文件根目录为空；验收临时文件仅在本机创建并已清理，未修改远端工作区。测试结束已恢复系统屏幕超时。
 
 尚需完成：通知实际送达/点击、长时后台/锁屏及网络切换恢复、文件落盘校验、真实 Bot 交互卡片与图片、逐后端能力、读屏和大字体。实况窗还需相应服务及签名资质；应用进程被终止后的提醒需要单独的推送基础设施。当前不宣称与 Android 所有功能完全等效，也不承诺永久保活。
+
+## harmony.30（6831）：缺失 Performance 的连接兼容性修复
+
+真机复现：新设备可登录、识别在线主机，WebRTC 已选通 LAN，随后页面报 `performance is not defined`。共享 ControlLease 在直连授权租约启动时以及 RemoteGateway 请求期限依赖 `performance.now()`；ArkTS 原生运行环境没有这一浏览器全局，Android runtime 自带该接口，导致两端表现不同。
+
+在平台初始化时，仅当该接口缺失才注入 HarmonyOS systemDateTime STARTUP 单调毫秒时钟，包含深度休眠时间；不使用会受系统时间调整影响的 Date.now() 替代。已有 Performance 实现保留。新增无 Performance 环境下的共享租约接入及回拨/休眠过期回归测试。SDK 检查、97 tests、原生构建通过。修复包在桌面，HoKit 文件选择的自动操作受阻，已请用户完成签装；真实连接验收仍待更新后确认。尚未宣称服务器全部场景正常，结论仅针对已复现异常。

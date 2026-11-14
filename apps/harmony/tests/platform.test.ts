@@ -1,6 +1,8 @@
-import { afterEach, beforeAll, describe, expect, it } from 'vitest'
+import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import { controls, requests, secrets } from './native/state'
 import { installPlatform, NativeWebSocket, vaultRead, vaultWrite, vaultDelete } from '../core/platform'
+import { clock } from './native/time'
+import { ControlLease } from '../../../packages/webrtc/src/control-lease'
 import { RemoteServerApi } from '../../android/src/services/api'
 
 beforeAll(() => {
@@ -27,6 +29,32 @@ describe('Harmony native security boundary', () => {
       controls.onCreateSocket = undefined
       if (original) Object.defineProperty(globalThis, 'WebSocket', original)
       else delete (globalThis as any).WebSocket
+    }
+  })
+
+  it('provides a native monotonic clock for carrier leases when Performance is absent', () => {
+    const original = Object.getOwnPropertyDescriptor(globalThis, 'performance')
+    const wall = Date.now()
+    let lease: ControlLease | undefined
+    try {
+      Reflect.deleteProperty(globalThis, 'performance')
+      clock.milliseconds = 1000
+      installPlatform()
+      const installed = globalThis.performance
+      installPlatform()
+      expect(globalThis.performance).toBe(installed)
+      lease = new ControlLease('connection', 'ticket', () => {}, () => {})
+      lease.start()
+      lease.acknowledge({ connectionId: 'connection', requestId: '1', ticket: 'renewed', leaseMs: 300000 })
+      expect(lease.canDetach()).toBe(true)
+      const now = vi.spyOn(Date, 'now').mockReturnValue(wall - 60000)
+      clock.milliseconds += 300001 // Sleep/clock rollback cannot extend authorization.
+      expect(lease.valid()).toBe(false)
+      now.mockRestore()
+    } finally {
+      vi.restoreAllMocks(); lease?.stop()
+      if (original) Object.defineProperty(globalThis, 'performance', original)
+      else Reflect.deleteProperty(globalThis, 'performance')
     }
   })
 

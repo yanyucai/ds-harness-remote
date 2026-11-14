@@ -1,6 +1,6 @@
 {
   "name": "@dsh-remote/harmony",
-  "version": "0.6.3-harmony.29",
+  "version": "0.6.3-harmony.30",
   "private": true,
   "type": "module",
   "scripts": {

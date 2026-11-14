@@ -1,6 +1,7 @@
 // Native HarmonyOS adapters. No WebView, remote script, or Android runtime.
 import cryptoFramework from '@ohos.security.cryptoFramework'
 import util from '@ohos.util'
+import systemDateTime from '@ohos.systemDateTime'
 import url from '@ohos.url'
 import rcp from '@hms.collaboration.rcp'
 import webSocket from '@ohos.net.webSocket'
@@ -158,6 +159,11 @@ class NativeAbortController {
 export function installPlatform(): void {
   const random = cryptoFramework.createRandom()
   const globals = globalThis as unknown as Record<string, unknown>
+  // Shared carrier leases and RPC deadlines need a monotonic clock even in
+  // ArkTS runtimes without the browser Performance API. Include device sleep.
+  if (typeof (globals.performance as { now?: unknown } | undefined)?.now !== 'function') {
+    globals.performance = { now: () => systemDateTime.getUptime(systemDateTime.TimeType.STARTUP, false) }
+  }
   globals.crypto = {
     getRandomValues: (target: Uint8Array) => {
       if (!(target instanceof Uint8Array) || target.length > 65536) throw new TypeError('Invalid random byte request.')
