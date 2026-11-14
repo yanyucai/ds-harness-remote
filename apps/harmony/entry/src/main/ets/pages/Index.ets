@@ -7,6 +7,7 @@ import fileUri from '@ohos.file.fileuri'
 import common from '@ohos.app.ability.common'
 import fs from '@ohos.file.fs'
 import util from '@ohos.util'
+import window from '@ohos.window'
 import promptAction from '@ohos.promptAction'
 import { AlignmentPanel } from '../components/AlignmentPanel'
 import { LocalSurface } from '../components/LocalSurface'
@@ -416,6 +417,7 @@ struct Index {
   @State expandedComposer: boolean = false
   @State pageWidth: number = 400
   @State pageHeight: number = 800
+  @State bottomSafeHeight: number = 0
   @State showHostSwitcher: boolean = false
   @State showSettings: boolean = false
   @State settingsPage: string = ''
@@ -557,8 +559,16 @@ struct Index {
       }
     })
     runtime.initialize().catch(() => {})
+    this.refreshBottomSafeArea()
   }
 
+  private async refreshBottomSafeArea(): Promise<void> {
+    try {
+      const target = await window.getLastWindow(getContext(this) as common.UIAbilityContext)
+      const area = target.getWindowAvoidArea(window.AvoidAreaType.TYPE_SYSTEM)
+      this.bottomSafeHeight = area.visible ? Math.max(0, px2vp(area.bottomRect.height)) : 0
+    } catch {}
+  }
 
   aboutToDisappear(): void {
     this.saveReadingPosition()
@@ -870,15 +880,34 @@ struct Index {
 
   @Builder
   morePanel() {
-    Column({ space: 10 }) {
+    Scroll() {
+      Column({ space: 10 }) {
       if (this.panelPage === '') {
         this.sheetTitle('更多操作', false)
+        Row({ space: 8 }) {
+          Button(runtime.translate('会话信息')).layoutWeight(1).height(40).fontSize(13)
+            .backgroundColor(this.theme().surfaceStrong).fontColor(this.theme().ink).borderRadius(14)
+            .onClick(() => { this.showMore = false; this.showInfo = true; this.invoke('sessionInfo') })
+          Button(runtime.translate(this.traceMode ? '返回对话' : '查看轨迹')).layoutWeight(1).height(40).fontSize(13)
+            .backgroundColor(this.traceMode ? this.theme().primarySoft : this.theme().surfaceStrong)
+            .fontColor(this.traceMode ? this.accentColor() : this.theme().ink).borderRadius(14)
+            .onClick(() => { this.showMore = false; this.traceMode = !this.traceMode; this.traceQuery = ''; this.traceCategory = 'all' })
+        }.width('100%')
+        Row({ space: 8 }) {
+          Button(runtime.translate('切换主机')).layoutWeight(1).height(40).fontSize(13)
+            .backgroundColor(this.theme().surfaceStrong).fontColor(this.theme().ink).borderRadius(14)
+            .onClick(() => { this.showMore = false; this.showHostSwitcher = true; this.invoke('refresh') })
+          Button(runtime.translate('断开连接')).layoutWeight(1).height(40).fontSize(13)
+            .backgroundColor(this.theme().surfaceStrong).fontColor(this.theme().danger).borderRadius(14)
+            .onClick(() => { this.showMore = false; this.invoke('disconnect') })
+        }.width('100%')
         Row({ space: 12 }) {
           Button(runtime.translate('拍照')).layoutWeight(1).height(56).backgroundColor(this.theme().surfaceStrong)
             .fontColor(this.state.accentColor).enabled(!this.state.busy).onClick(() => { this.showMore = false; this.panelPage = ''; this.takePhoto() })
           Button(runtime.translate('相册')).layoutWeight(1).height(56).backgroundColor(this.theme().surfaceStrong)
             .fontColor(this.state.accentColor).enabled(!this.state.busy).onClick(() => { this.showMore = false; this.panelPage = ''; this.pickImage() })
-          Button(runtime.translate('视频')).layoutWeight(1).height(56).enabled(this.state.connected).onClick(() => { this.showMore = false; this.pickVideo() })
+          Button(runtime.translate('视频')).layoutWeight(1).height(56).backgroundColor(this.theme().surfaceStrong)
+            .fontColor(this.state.accentColor).enabled(this.state.connected).onClick(() => { this.showMore = false; this.pickVideo() })
           Button(runtime.translate('文件')).layoutWeight(1).height(56).backgroundColor(this.theme().surfaceStrong)
             .fontColor(this.state.accentColor).enabled(!this.state.busy).onClick(() => { this.showMore = false; this.panelPage = ''; this.pickDocument() })
         }.width('100%')
@@ -1048,9 +1077,11 @@ struct Index {
             }, (item: CatalogRow) => `move|${item.id}|${item.name}|${item.description}|${item.count}|${item.favorite}`)
           }.width('100%').constraintSize({ maxHeight: 330 })
         }
-      }
-    }.width('100%').padding({ left: 20, right: 20, top: 18, bottom: 28 })
+        }
+      }.width('100%').padding({ left: 20, right: 20, top: 18, bottom: 20 })
+    }.width('100%').constraintSize({ maxHeight: Math.max(280, this.pageHeight - 100 - this.bottomSafeHeight) })
       .backgroundColor(this.theme().background).borderRadius({ topLeft: 28, topRight: 28 })
+      .scrollBar(BarState.Auto)
   }
 
   /** Android's title-bar 子任务 popover: child sessions only, tapping opens one. */
@@ -2744,69 +2775,67 @@ struct Index {
           .onClick(() => { this.showHostSwitcher = true; this.invoke('refresh') })
       }.width('100%').padding({ left: 20, right: 16, top: 14, bottom: 10 })
         .backgroundColor(this.theme().background)
-    } else {
-      Column({ space: 6 }) {
-        Row({ space: 8 }) {
-          if (this.state.view !== 'login' && this.state.view !== 'devices') {
-            Button('‹').accessibilityText(runtime.translate('返回')).fontSize(24).fontWeight(FontWeight.Medium)
-              .width(40).height(40).padding(0).flexShrink(0).backgroundColor(this.theme().elevated).borderRadius(999)
-              .border({ width: 1, color: this.theme().separator })
-              .fontColor(this.theme().ink).onClick(() => { this.invoke('back') })
-          }
-          Column({ space: 1 }) {
-            Text(this.state.title).width('100%').fontSize(17).lineHeight(22).fontWeight(FontWeight.Bold)
-              .fontColor(this.theme().ink).textAlign(TextAlign.Center).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
-            Text(runtime.translate(this.state.connected || this.state.recovering ? this.state.status : 'HarmonyOS · 0.6.5 移植预览'))
-              .width('100%').textAlign(TextAlign.Center)
-              .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
-              .fontSize(this.typography().captionSize).lineHeight(this.typography().captionLineHeight)
-              .fontColor(this.state.connected ? (this.state.recovering ? this.theme().warning : this.theme().success) : this.theme().muted)
-          }.alignItems(HorizontalAlign.Center).layoutWeight(1)
-        }.width('100%').constraintSize({ minHeight: 44 })
+    } else if (this.state.view === 'chat') {
+      Row({ space: 10 }) {
+        Button(this.state.connected ? '☰' : '‹')
+          .accessibilityText(runtime.translate(this.state.connected ? '工作区与会话' : '返回'))
+          .fontSize(this.state.connected ? 20 : 24).width(42).height(42).padding(0).flexShrink(0)
+          .backgroundColor(this.theme().elevated).borderRadius(999)
+          .border({ width: 1, color: this.theme().separator }).fontColor(this.theme().ink)
+          .onClick(() => { if (this.state.connected) this.openDrawer(); else this.invoke('back') })
+        Column({ space: 1 }) {
+          Text(this.state.title).width('100%').fontSize(18).lineHeight(23).fontWeight(FontWeight.Bold)
+            .fontColor(this.theme().ink).textAlign(TextAlign.Center).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+          Text(runtime.translate(this.state.connected || this.state.recovering ? this.state.status : '已断开连接'))
+            .width('100%').textAlign(TextAlign.Center).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+            .fontSize(12).lineHeight(16)
+            .fontColor(this.state.connected ? (this.state.recovering ? this.theme().warning : this.theme().success) : this.theme().muted)
+        }.alignItems(HorizontalAlign.Center).layoutWeight(1)
         if (this.state.connected) {
-          Scroll() {
-            Row({ space: 6 }) {
-              if (this.state.view === 'chat') {
-                if (this.state.children.length > 0) {
-                  Button(runtime.translate(`子任务 ${this.state.children.length}`)).fontSize(12).height(34)
-                    .backgroundColor(this.theme().elevated).borderRadius(999)
-                    .border({ width: 1, color: this.theme().separator })
-                    .fontColor(this.accentColor()).onClick(() => { this.showChildren = true })
-                }
-                Button(runtime.translate('信息')).padding({ left: 12, right: 12 }).fontSize(12).height(34)
-                  .backgroundColor(this.theme().elevated).borderRadius(999)
-                  .border({ width: 1, color: this.theme().separator })
-                  .fontColor(this.theme().muted).onClick(() => { this.showInfo = true; this.invoke('sessionInfo') })
-                Button(runtime.translate(this.traceMode ? '对话' : '轨迹')).padding({ left: 12, right: 12 }).fontSize(12).height(34)
-                  .backgroundColor(this.traceMode ? this.theme().primarySoft : this.theme().elevated).borderRadius(999)
-                  .border({ width: 1, color: this.theme().separator })
-                  .fontColor(this.traceMode ? this.accentColor() : this.theme().muted)
-                  .onClick(() => { this.traceMode = !this.traceMode; this.traceQuery = ''; this.traceCategory = 'all' })
-              }
-              Button(runtime.translate('切换主机')).fontSize(12).height(34)
-                .backgroundColor(this.theme().elevated).borderRadius(999)
-                .border({ width: 1, color: this.theme().separator })
-                .fontColor(this.accentColor()).onClick(() => { this.showHostSwitcher = true; this.invoke('refresh') })
-              Button('☰').accessibilityText(runtime.translate('工作区与会话')).width(34).padding(0).fontSize(17).height(34)
-                .backgroundColor(this.theme().elevated).borderRadius(999)
-                .border({ width: 1, color: this.theme().separator }).fontColor(this.theme().muted)
-                .onClick(() => { this.openDrawer() })
-              Button(runtime.translate('断开')).padding({ left: 12, right: 12 }).fontSize(12).height(34)
-                .backgroundColor(this.theme().elevated).borderRadius(999)
-                .border({ width: 1, color: this.theme().separator }).fontColor(this.theme().muted)
-                .onClick(() => { this.invoke('disconnect') })
-            }.width('100%')
-          }.scrollable(ScrollDirection.Horizontal).scrollBar(BarState.Off).width('100%')
-        } else if (this.state.canReconnect) {
-          Button(runtime.translate('重新连接')).fontSize(12).height(34)
-            .backgroundColor(this.theme().primarySoft).borderRadius(999).fontColor(this.accentColor())
-            .onClick(() => { this.invoke('reconnect') })
-          Button('⚙').fontSize(16).height(34).backgroundColor(this.theme().elevated).borderRadius(999).fontColor(this.theme().muted)
-            .onClick(() => { this.settingsPage = ''; this.showSettings = true })
+          Row({ space: 2 }) {
+            Button('⋯').accessibilityText(runtime.translate('会话操作')).fontSize(19).width(34).height(34).padding(0)
+              .backgroundColor(Color.Transparent).fontColor(this.theme().ink).borderRadius(999)
+              .onClick(() => { this.openMore() })
+            Button('＋').accessibilityText(runtime.translate('新建对话')).fontSize(22).width(34).height(34).padding(0)
+              .backgroundColor(Color.Transparent).fontColor(this.theme().ink).borderRadius(999)
+              .enabled(!this.state.busy).onClick(() => { this.invoke('newSession') })
+          }.height(42).padding({ left: 4, right: 4 }).flexShrink(0)
+            .backgroundColor(this.theme().elevated).borderRadius(999)
+            .border({ width: 1, color: this.theme().separator })
         } else {
-          Button('⚙').fontSize(16).height(34).backgroundColor(this.theme().elevated).borderRadius(999).fontColor(this.theme().muted)
-            .onClick(() => { this.settingsPage = ''; this.showSettings = true })
+          Row({ space: 4 }) {
+            if (this.state.canReconnect) {
+              Button(runtime.translate('重连')).fontSize(12).height(36).padding({ left: 10, right: 10 })
+                .backgroundColor(this.theme().primarySoft).fontColor(this.accentColor()).borderRadius(999)
+                .onClick(() => { this.invoke('reconnect') })
+            }
+            Button('⚙').accessibilityText(runtime.translate('设置')).fontSize(17).width(38).height(38).padding(0)
+              .backgroundColor(this.theme().elevated).borderRadius(999).border({ width: 1, color: this.theme().separator })
+              .fontColor(this.theme().ink).onClick(() => { this.settingsPage = ''; this.showSettings = true })
+          }.flexShrink(0)
         }
+      }.width('100%').padding({ left: 16, right: 16, top: 10, bottom: 8 })
+        .backgroundColor(this.theme().background)
+    } else {
+      Row({ space: 8 }) {
+        if (this.state.view !== 'login' && this.state.view !== 'devices') {
+          Button('‹').accessibilityText(runtime.translate('返回')).fontSize(24).fontWeight(FontWeight.Medium)
+            .width(40).height(40).padding(0).flexShrink(0).backgroundColor(this.theme().elevated).borderRadius(999)
+            .border({ width: 1, color: this.theme().separator })
+            .fontColor(this.theme().ink).onClick(() => { this.invoke('back') })
+        }
+        Column({ space: 1 }) {
+          Text(this.state.title).width('100%').fontSize(17).lineHeight(22).fontWeight(FontWeight.Bold)
+            .fontColor(this.theme().ink).textAlign(TextAlign.Center).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+          Text(runtime.translate(this.state.connected || this.state.recovering ? this.state.status : 'HarmonyOS · 0.6.5 移植预览'))
+            .width('100%').textAlign(TextAlign.Center)
+            .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+            .fontSize(this.typography().captionSize).lineHeight(this.typography().captionLineHeight)
+            .fontColor(this.state.connected ? (this.state.recovering ? this.theme().warning : this.theme().success) : this.theme().muted)
+        }.alignItems(HorizontalAlign.Center).layoutWeight(1)
+        Button('⚙').accessibilityText(runtime.translate('设置')).fontSize(17).width(40).height(40).padding(0)
+          .backgroundColor(this.theme().elevated).borderRadius(999).border({ width: 1, color: this.theme().separator })
+          .fontColor(this.theme().ink).onClick(() => { this.settingsPage = ''; this.showSettings = true })
       }.padding({ left: 16, right: 16, top: 8, bottom: 10 }).width('100%')
         .backgroundColor(this.theme().background)
     }
@@ -3275,7 +3304,8 @@ struct Index {
         .backgroundColor(this.theme().elevated).fontColor(this.theme().ink).borderRadius(999)
         .border({ width: 1, color: this.theme().separator })
         .onClick(() => { this.settingsPage = ''; this.showSettings = true })
-    }.width('100%').height(76).padding({ left: 8, right: 16, top: 8, bottom: 8 })
+    }.width('100%').height(76 + this.bottomSafeHeight)
+      .padding({ left: 8, right: 16, top: 8, bottom: 8 + this.bottomSafeHeight })
       .backgroundColor(this.theme().background)
       .border({ width: { top: 1 }, color: this.theme().separator })
   }
@@ -3392,7 +3422,7 @@ struct Index {
               }.width('100%').padding(28)
             }
           }
-        }.layoutWeight(1).width('100%').padding({ bottom: 86 })
+        }.layoutWeight(1).width('100%').padding({ bottom: 86 + this.bottomSafeHeight })
         if (this.showWorkspaceCreator) {
           Row({ space: 8 }) {
             TextInput({ text: this.directory, placeholder: runtime.translate('Harness 新工作区的绝对路径') }).layoutWeight(1)
@@ -3409,9 +3439,9 @@ struct Index {
               })
           }.width('100%').padding({ top: 4 })
         }
-      }.width('100%').height('100%').padding({ left: 16, right: 16, bottom: 76 })
+      }.width('100%').height('100%').padding({ left: 16, right: 16, bottom: 76 + this.bottomSafeHeight })
       this.homeHostFooter()
-    }.width('100%').height('100%')
+    }.width('100%').layoutWeight(1)
   }
 
   @Builder
@@ -3439,7 +3469,7 @@ struct Index {
       Button(runtime.translate('退出本机账号')).height(44).width('100%')
         .backgroundColor(Color.Transparent).fontColor(this.theme().muted)
         .onClick(() => { this.invoke('logout') })
-    }.width('100%').height('100%').padding(16)
+    }.width('100%').layoutWeight(1).padding(16)
   }
 
   @Builder
@@ -3454,27 +3484,9 @@ struct Index {
   @Builder
   chat() {
     Column() {
-      if (this.state.models.length > 0) {
-        Button(runtime.translate(this.state.selectedModel || '选择模型')).fontSize(12).height(32)
-          .backgroundColor(Color.Transparent).fontColor(this.state.accentColor).enabled(!this.state.running && !this.state.busy)
-          .onClick(() => { this.showModels = !this.showModels })
-      }
-      if (this.showModels) {
-        Select(this.state.models.map((model: ModelRow): SelectOption => ({ value: model.name })))
-          .selected(this.selectedModel).value('选择模型').onSelect((index: number) => { this.selectedModel = index; this.effort = '' })
-        if (this.state.models[this.selectedModel]?.efforts.length > 0) {
-          Select(this.state.models[this.selectedModel].efforts.map((item: ModelEffort): SelectOption => ({ value: item.name })))
-            .value('思考强度').onSelect((index: number) => { this.effort = this.state.models[this.selectedModel].efforts[index].id })
-        }
-        Button(runtime.translate('应用模型')).onClick(() => {
-          const model: ModelRow = this.state.models[this.selectedModel]
-          if (model) runtime.perform('model', JSON.stringify({ provider: model.provider, model: model.model, effort: this.effort })).catch(() => {})
-          this.showModels = false
-        })
-      }
       if (this.state.modelWarning) { Text(this.state.modelWarning).fontSize(11).fontColor(this.theme().muted).padding(8) }
       if (this.traceMode) { this.traceControls() }
-      List({ space: 4, scroller: this.scroller }) {
+      List({ space: 8, scroller: this.scroller }) {
         if (this.state.hasMore) {
           ListItem() { Button(runtime.translate('加载更早消息')).enabled(!this.state.busy).onClick(() => { this.invoke('history') }) }
         }
@@ -3571,140 +3583,224 @@ struct Index {
         if (!this.traceMode && this.state.rows.length === 0 && this.state.botExtras.length === 0 && !this.state.busy) {
           ListItem() { Text(runtime.translate('继续电脑上的工作，或发送第一条消息。')).padding(24).fontColor(this.theme().muted) }
         }
-      }.layoutWeight(1).width('100%').padding({ left: 16, right: 16 })
+      }.layoutWeight(1).width('100%').padding({ left: 16, right: 16, top: 8 })
         .onScrollIndex((start: number) => { this.firstVisibleRow = start })
         .onScrollStart(() => { if (!this.restoringReading) this.pinnedToBottom = false })
         .onScrollStop(() => { this.saveReadingPosition() })
         .onAreaChange(() => { this.restoreReadingPosition() })
-      if (this.state.connected) {
-        Row({ space: 8 }) {
-          Button(runtime.translate('活动')).fontSize(12).height(32).onClick(() => { this.alignmentPanel = 'activity' })
-          Button(runtime.translate('管理对话')).fontSize(12).height(32).onClick(() => { this.alignmentPanel = 'sessions' })
-          Button(runtime.translate(this.expandedComposer ? '收起输入' : '展开输入')).fontSize(12).height(32).onClick(() => { this.expandedComposer = !this.expandedComposer })
-        }.width('100%').justifyContent(FlexAlign.Center)
-      }
-      if (this.state.botTarget.length > 0) {
-        if (this.state.botReadOnly.length > 0) Text(this.state.botReadOnly).fontSize(12).fontColor(this.theme().muted).width('100%')
-        Row({ space: 8 }) {
-          Button(runtime.translate('更早记录')).onClick(() => { this.invoke('botEarlier') })
-          Button(runtime.translate('刷新智能体')).onClick(() => { this.invoke('botRefresh') })
-          Button(runtime.translate('旁问 /btw')).enabled(this.state.botReadOnly.length === 0).onClick(() => { this.draft = '/btw ' + this.draft })
-        }.width('100%')
-      }
-      if (this.state.activityDockMode === 'cards') {
-        Column({space:8}) {
-          ForEach(this.state.activity.rows.slice(0,6), (row: ActivityRow) => {
-            Text(row.title + ' · ' + row.status).fontSize(13).width('100%').padding(10).backgroundColor(this.theme().surfaceStrong).borderRadius(10).onClick(() => {this.alignmentPanel='activity'})
-          }, (row: ActivityRow) => row.id+'|'+row.status)
-          Button(runtime.translate('全部活动')).onClick(() => {this.alignmentPanel='activity'})
-        }.width('100%').padding({left:20,right:20})
-      }
-      if (this.state.activityDockMode === 'compact' && (this.state.activity.rows.length > 0 || this.state.activity.jobs.length > 0)) {
-        Scroll() {
+      Column({ space: 8 }) {
+        if (this.state.botTarget.length > 0) {
+          if (this.state.botReadOnly.length > 0) Text(this.state.botReadOnly).fontSize(12).fontColor(this.theme().muted).width('100%')
           Row({ space: 8 }) {
-            ForEach(['todos', 'goal', 'team', 'subagents'], (category: string) => {
-              if (this.state.activity.rows.some((row: ActivityRow) => row.category === category)) {
-                Button(runtime.translate(category === 'todos' ? '待办' : category === 'goal' ? '目标' : category === 'team' ? '团队' : '子任务') + ' ' + this.state.activity.rows.filter((row: ActivityRow) => row.category === category && row.status === 'completed').length + '/' + this.state.activity.rows.filter((row: ActivityRow) => row.category === category).length)
-                  .fontSize(11).height(32).onClick(() => { this.alignmentPanel = 'activity' })
-              }
-            }, (category: string) => category)
-            if (this.state.activity.jobs.length > 0) Button(runtime.translate('后台任务') + ' ' + this.state.activity.jobs.filter((job: JobRow) => job.status === 'running').length).fontSize(11).height(32).onClick(() => { this.alignmentPanel = 'activity' })
-          }.padding({ left: 16, right: 16 })
-        }.width('100%').scrollable(ScrollDirection.Horizontal).scrollBar(BarState.Off)
-      }
-      if (this.state.compactionStatus.length > 0) {
-        Row({space:8}) {
-          Text(this.state.compactionStatus).fontSize(12).layoutWeight(1)
-          if (this.state.compactionCancellable) Button(runtime.translate('取消压缩')).onClick(() => { this.send('cancelCompaction', {}) })
-        }.padding({left:20,right:20}).width('100%')
-      }
-      if (this.state.running) {
-        Row({ space: 12 }) {
-          LoadingProgress().width(18).height(18)
-          Text(runtime.translate('主机正在回复')).fontSize(12).layoutWeight(1)
-          Button(runtime.translate('停止')).fontSize(12).height(32).onClick(() => { this.invoke('interrupt') })
-        }.padding({ left: 24, right: 24, top: 8 })
-      }
-      ForEach(this.state.stagedFiles, (file: StagedFile) => {
-        Row({ space: 8 }) {
-          Text(file.name).fontSize(12).layoutWeight(1).maxLines(1)
-          Button(runtime.translate('移除')).onClick(() => { this.send('removeFile', { id: file.id }) })
-        }.width('100%').padding({ left: 24, right: 24 })
-      }, (file: StagedFile) => file.id)
-      ForEach(this.promptImages, (image: PromptAttachment, index: number) => {
-        Row({ space: 8 }) {
-          Image(`data:${image.mediaType};base64,${image.data}`).width(36).height(36).objectFit(ImageFit.Contain)
-          Text(runtime.translate(`图片 ${index + 1}`)).fontSize(12).layoutWeight(1)
-          Button(runtime.translate('移除')).onClick(() => { this.promptImages = this.promptImages.filter((row: PromptAttachment, at: number) => at !== index); this.image = this.promptImages[0]?.data ?? '' })
-        }.padding({ left: 24, right: 24 }).width('100%')
-      }, (image: PromptAttachment, index: number) => String(index) + image.data.slice(0,32))
-      if (this.state.botTarget.length > 0 && this.draft.lastIndexOf('@') >= 0 && !this.draft.slice(this.draft.lastIndexOf('@')).includes(' ')) {
-        Scroll() {
-          Row({space:8}) {
-            ForEach(this.state.botDefinitions.filter((bot:BotDefinition) => bot.name.toLowerCase().startsWith(this.draft.slice(this.draft.lastIndexOf('@')+1).toLowerCase())), (bot:BotDefinition) => {
-              Button('@'+bot.name).fontSize(12).onClick(() => { this.draft=this.draft.slice(0,this.draft.lastIndexOf('@'))+'@'+bot.name+' '; this.send('saveDraft',{id:this.state.sessionKey,text:this.draft}) })
-            }, (bot:BotDefinition)=>bot.id)
-          }
-        }.scrollable(ScrollDirection.Horizontal).width('100%')
-      }
-      if (this.imageError) { Text(this.imageError).fontSize(12).fontColor(this.theme().danger).padding(8) }
-      if (this.state.queue.length > 0) {
-        Column({ space: 6 }) {
-          Text(runtime.translate(`排队中 ${this.state.queue.length} 条消息`)).fontSize(12).fontColor(this.theme().muted).width('100%')
-          ForEach(this.state.queue, (item: QueueRow) => {
-            Row({ space: 8 }) {
-              Text(item.preview).fontSize(13).layoutWeight(1).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
-              Text(runtime.translate('等待执行')).fontSize(11).fontColor(this.theme().muted)
-              if (item.id.length > 0) {
-                Button(runtime.translate('立即发送')).fontSize(12).height(30).backgroundColor(Color.Transparent).fontColor(this.state.accentColor)
-                  .onClick(() => { this.send('queueAction', { id: item.id, mode: 'steer' }) })
-                Button(runtime.translate('移出队列')).fontSize(12).height(30).backgroundColor(Color.Transparent).fontColor(this.theme().muted)
-                  .onClick(() => { this.send('queueAction', { id: item.id, mode: 'remove' }) })
-              }
-            }.width('100%')
-          }, (item: QueueRow) => `${item.id}|${item.preview}`)
-        }.padding({ left: 26, right: 22, top: 10, bottom: 10 }).width('100%')
-          .backgroundColor(this.theme().surfaceStrong)
-      }
-      Column({ space: 6 }) {
-        TextArea({ text: this.draft, placeholder: runtime.translate('向远程会话发送消息…') })
-          .height(this.expandedComposer ? 220 : 72).width('100%')
-          .fontSize(this.typography().bodySize).lineHeight(this.typography().bodyLineHeight + 2)
-          .fontColor(this.theme().ink).placeholderColor(this.theme().muted)
-          .backgroundColor(Color.Transparent).padding({ left: 4, right: 4, top: 4, bottom: 4 })
-          .onChange((value: string) => { this.draft = value; runtime.perform('saveDraft', JSON.stringify({ id: this.lastSession, text: value })).catch(() => {}) })
-        Row({ space: 10 }) {
-        if (this.state.uploadProgress.length > 0) {
-          Text(this.state.uploadProgress).fontSize(12).layoutWeight(1).maxLines(2)
-          Button(runtime.translate('取消上传')).onClick(() => { this.send('cancelUpload', {}) })
+            Button(runtime.translate('更早记录')).height(36).fontSize(12)
+              .backgroundColor(this.theme().surfaceStrong).fontColor(this.theme().ink).borderRadius(999)
+              .onClick(() => { this.invoke('botEarlier') })
+            Button(runtime.translate('刷新智能体')).height(36).fontSize(12)
+              .backgroundColor(this.theme().surfaceStrong).fontColor(this.theme().ink).borderRadius(999)
+              .onClick(() => { this.invoke('botRefresh') })
+            Button(runtime.translate('旁问')).height(36).fontSize(12)
+              .backgroundColor(this.theme().surfaceStrong).fontColor(this.theme().ink).borderRadius(999)
+              .enabled(this.state.botReadOnly.length === 0).onClick(() => { this.draft = '/btw ' + this.draft })
+          }.width('100%')
         }
-        Button('＋').width(36).height(36).padding(0).fontSize(20).fontColor(this.theme().ink)
-          .backgroundColor(this.theme().surfaceStrong).borderRadius(18)
-          .onClick(() => { this.openMore() }).enabled(!this.state.busy && this.state.connected)
-        Button(runtime.translate('快捷提示词')).fontSize(13).height(36).padding({ left: 14, right: 14 })
-          .backgroundColor(this.theme().surfaceStrong).fontColor(this.theme().ink).borderRadius(999)
-          .enabled(!this.state.busy && this.state.connected).onClick(() => { this.openPrompts() })
-        Blank()
-        Button(runtime.translate('发送')).width(44).height(44).padding(0).fontSize(13).fontWeight(FontWeight.Medium)
-          .backgroundColor(this.state.accentColor).fontColor(this.theme().onPrimary).borderRadius(22)
-          .enabled(this.state.connected && !this.state.busy && (this.state.botTarget.length === 0 || this.state.botReadOnly.length === 0) && (this.draft.trim().length > 0 || this.image.length > 0 || this.state.stagedFiles.length > 0))
-          .onClick(() => {
-            const text: string = this.draft
-            const failedCount: number = this.state.failedSends.length
-            const image: string = this.image
-            const images: PromptAttachment[] = this.promptImages.map((value: PromptAttachment): PromptAttachment => ({ data: value.data, mediaType: value.mediaType }))
-            runtime.perform('prompt', JSON.stringify({ text: text, images: images }))
-              .then((success: boolean) => {
-                const retained: boolean = this.state.failedSends.length > failedCount
-                if ((success || retained) && this.draft === text) this.draft = ''
-                if ((success || retained) && this.image === image) { this.image = ''; this.promptImages = [] }
-                if (success || retained) runtime.perform('saveDraft', JSON.stringify({ id: this.lastSession, text: '' } as ActionInput)).catch(() => {})
-              }).catch(() => {})
-          })
-        }.width('100%').alignItems(VerticalAlign.Center)
-      }.padding({ left: 12, right: 12, top: 8, bottom: 8 }).width('calc(100% - 32vp)')
-        .backgroundColor(this.theme().surface).border({ width: 1, color: this.theme().border })
-        .borderRadius(22).shadow({ radius: 8, color: this.theme().separator, offsetX: 0, offsetY: 2 })
+        if (this.state.children.length > 0) {
+          Button(runtime.translate(`智能体团队 ${this.state.children.length}`)).height(44).width('100%')
+            .fontSize(14).fontColor(this.theme().ink).backgroundColor(Color.Transparent).borderRadius(18)
+            .border({ width: 1, color: this.theme().separator })
+            .onClick(() => { this.showChildren = true })
+        }
+        if (this.state.activityDockMode === 'cards') {
+          Column({ space: 8 }) {
+            ForEach(this.state.activity.rows.slice(0, 6), (row: ActivityRow) => {
+              Text(row.title + ' · ' + row.status).fontSize(13).width('100%').padding(12)
+                .backgroundColor(this.theme().surface).borderRadius(16)
+                .border({ width: 1, color: this.theme().separator })
+                .onClick(() => { this.alignmentPanel = 'activity' })
+            }, (row: ActivityRow) => row.id + '|' + row.status)
+            Button(runtime.translate('全部活动')).height(38).fontSize(12).width('100%')
+              .backgroundColor(this.theme().surfaceStrong).fontColor(this.theme().ink).borderRadius(999)
+              .onClick(() => { this.alignmentPanel = 'activity' })
+          }.width('100%')
+        }
+        if (this.state.activityDockMode === 'compact' && (this.state.activity.rows.length > 0 || this.state.activity.jobs.length > 0)) {
+          Scroll() {
+            Row({ space: 8 }) {
+              ForEach(['todos', 'goal', 'team', 'subagents'], (category: string) => {
+                if (this.state.activity.rows.some((row: ActivityRow) => row.category === category)) {
+                  Button(runtime.translate(category === 'todos' ? '待办' : category === 'goal' ? '目标' : category === 'team' ? '团队' : '子任务') + ' ' + this.state.activity.rows.filter((row: ActivityRow) => row.category === category && row.status === 'completed').length + '/' + this.state.activity.rows.filter((row: ActivityRow) => row.category === category).length)
+                    .fontSize(11).height(34).padding({ left: 12, right: 12 })
+                    .backgroundColor(this.theme().surfaceStrong).fontColor(this.theme().muted).borderRadius(999)
+                    .onClick(() => { this.alignmentPanel = 'activity' })
+                }
+              }, (category: string) => category)
+              if (this.state.activity.jobs.length > 0) {
+                Button(runtime.translate('后台任务') + ' ' + this.state.activity.jobs.filter((job: JobRow) => job.status === 'running').length)
+                  .fontSize(11).height(34).padding({ left: 12, right: 12 })
+                  .backgroundColor(this.theme().surfaceStrong).fontColor(this.theme().muted).borderRadius(999)
+                  .onClick(() => { this.alignmentPanel = 'activity' })
+              }
+            }
+          }.width('100%').scrollable(ScrollDirection.Horizontal).scrollBar(BarState.Off)
+        }
+        if (this.state.compactionStatus.length > 0) {
+          Row({ space: 8 }) {
+            Text(this.state.compactionStatus).fontSize(12).fontColor(this.theme().muted).layoutWeight(1)
+            if (this.state.compactionCancellable) {
+              Button(runtime.translate('取消压缩')).height(34).fontSize(12)
+                .backgroundColor(this.theme().surfaceStrong).fontColor(this.theme().ink).borderRadius(999)
+                .onClick(() => { this.send('cancelCompaction', {}) })
+            }
+          }.width('100%').padding({ left: 4, right: 4 })
+        }
+        ForEach(this.state.stagedFiles, (file: StagedFile) => {
+          Row({ space: 8 }) {
+            Text('📄').fontSize(15)
+            Text(file.name).fontSize(12).layoutWeight(1).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+            Button('✕').accessibilityText(runtime.translate('移除')).fontSize(13).width(30).height(30).padding(0)
+              .backgroundColor(Color.Transparent).fontColor(this.theme().muted)
+              .onClick(() => { this.send('removeFile', { id: file.id }) })
+          }.width('100%').padding({ left: 10, right: 6, top: 6, bottom: 6 })
+            .backgroundColor(this.theme().surfaceStrong).borderRadius(14)
+        }, (file: StagedFile) => file.id)
+        ForEach(this.promptImages, (image: PromptAttachment, index: number) => {
+          Row({ space: 8 }) {
+            Image(`data:${image.mediaType};base64,${image.data}`).width(38).height(38).objectFit(ImageFit.Cover).borderRadius(10)
+            Text(runtime.translate(`图片 ${index + 1}`)).fontSize(12).layoutWeight(1)
+            Button('✕').accessibilityText(runtime.translate('移除')).fontSize(13).width(30).height(30).padding(0)
+              .backgroundColor(Color.Transparent).fontColor(this.theme().muted)
+              .onClick(() => { this.promptImages = this.promptImages.filter((row: PromptAttachment, at: number) => at !== index); this.image = this.promptImages[0]?.data ?? '' })
+          }.width('100%').padding({ left: 8, right: 6, top: 6, bottom: 6 })
+            .backgroundColor(this.theme().surfaceStrong).borderRadius(14)
+        }, (image: PromptAttachment, index: number) => String(index) + image.data.slice(0, 32))
+        if (this.state.botTarget.length > 0 && this.draft.lastIndexOf('@') >= 0 && !this.draft.slice(this.draft.lastIndexOf('@')).includes(' ')) {
+          Scroll() {
+            Row({ space: 8 }) {
+              ForEach(this.state.botDefinitions.filter((bot: BotDefinition) => bot.name.toLowerCase().startsWith(this.draft.slice(this.draft.lastIndexOf('@') + 1).toLowerCase())), (bot: BotDefinition) => {
+                Button('@' + bot.name).fontSize(12).height(34).backgroundColor(this.theme().surfaceStrong)
+                  .onClick(() => { this.draft = this.draft.slice(0, this.draft.lastIndexOf('@')) + '@' + bot.name + ' '; this.send('saveDraft', { id: this.state.sessionKey, text: this.draft }) })
+              }, (bot: BotDefinition) => bot.id)
+            }
+          }.scrollable(ScrollDirection.Horizontal).width('100%')
+        }
+        if (this.imageError) {
+          Text(this.imageError).fontSize(12).fontColor(this.theme().danger).width('100%').padding(10)
+            .backgroundColor(this.theme().dangerSoft).borderRadius(12)
+        }
+        if (this.state.queue.length > 0) {
+          Column({ space: 6 }) {
+            Text(runtime.translate(`排队中 ${this.state.queue.length} 条消息`)).fontSize(12).fontColor(this.theme().muted).width('100%')
+            ForEach(this.state.queue, (item: QueueRow) => {
+              Row({ space: 8 }) {
+                Text(item.preview).fontSize(13).layoutWeight(1).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
+                Text(runtime.translate('等待执行')).fontSize(11).fontColor(this.theme().muted)
+                if (item.id.length > 0) {
+                  Button(runtime.translate('立即发送')).fontSize(12).height(30).backgroundColor(Color.Transparent).fontColor(this.state.accentColor)
+                    .onClick(() => { this.send('queueAction', { id: item.id, mode: 'steer' }) })
+                  Button(runtime.translate('移出队列')).fontSize(12).height(30).backgroundColor(Color.Transparent).fontColor(this.theme().muted)
+                    .onClick(() => { this.send('queueAction', { id: item.id, mode: 'remove' }) })
+                }
+              }.width('100%')
+            }, (item: QueueRow) => `${item.id}|${item.preview}`)
+          }.padding({ left: 12, right: 12, top: 10, bottom: 10 }).width('100%')
+            .backgroundColor(this.theme().surface).borderRadius(16)
+            .border({ width: 1, color: this.theme().separator })
+        }
+        if (this.state.uploadProgress.length > 0) {
+          Row({ space: 8 }) {
+            Text(this.state.uploadProgress).fontSize(12).fontColor(this.theme().muted).layoutWeight(1).maxLines(2)
+            Button(runtime.translate('取消')).height(30).fontSize(11).backgroundColor(Color.Transparent).fontColor(this.theme().danger)
+              .onClick(() => { this.send('cancelUpload', {}) })
+          }.width('100%').padding({ left: 4, right: 4 })
+        }
+        if (this.state.running) {
+          Row({ space: 8 }) {
+            LoadingProgress().width(16).height(16).color(this.accentColor())
+            Text(runtime.translate('主机正在回复')).fontSize(12).fontColor(this.accentColor()).layoutWeight(1)
+            Button(runtime.translate('停止')).height(34).fontSize(12)
+              .backgroundColor(this.theme().surfaceStrong).fontColor(this.theme().ink).borderRadius(999)
+              .onClick(() => { this.invoke('interrupt') })
+          }.width('100%').padding({ left: 4, right: 4 })
+        }
+        Column({ space: 6 }) {
+          if (this.showModels) {
+            Column({ space: 8 }) {
+              Row({ space: 8 }) {
+                Text(runtime.translate('模型')).fontSize(12).fontColor(this.theme().muted).width(44)
+                Select(this.state.models.map((model: ModelRow): SelectOption => ({ value: model.name })))
+                  .selected(this.selectedModel).value('选择模型').layoutWeight(1)
+                  .onSelect((index: number) => { this.selectedModel = index; this.effort = '' })
+              }.width('100%')
+              if (this.state.models[this.selectedModel]?.efforts.length > 0) {
+                Row({ space: 8 }) {
+                  Text(runtime.translate('思考')).fontSize(12).fontColor(this.theme().muted).width(44)
+                  Select(this.state.models[this.selectedModel].efforts.map((item: ModelEffort): SelectOption => ({ value: item.name })))
+                    .value('思考强度').layoutWeight(1)
+                    .onSelect((index: number) => { this.effort = this.state.models[this.selectedModel].efforts[index].id })
+                }.width('100%')
+              }
+              Row({ space: 8 }) {
+                Button(runtime.translate('取消')).layoutWeight(1).height(36).fontSize(12)
+                  .backgroundColor(this.theme().surfaceStrong).fontColor(this.theme().ink).borderRadius(999)
+                  .onClick(() => { this.showModels = false })
+                Button(runtime.translate('应用')).layoutWeight(1).height(36).fontSize(12)
+                  .backgroundColor(this.accentColor()).fontColor(this.theme().onPrimary).borderRadius(999)
+                  .onClick(() => {
+                    const model: ModelRow = this.state.models[this.selectedModel]
+                    if (model) runtime.perform('model', JSON.stringify({ provider: model.provider, model: model.model, effort: this.effort })).catch(() => {})
+                    this.showModels = false
+                  })
+              }.width('100%')
+            }.width('100%').padding(10).backgroundColor(this.theme().background).borderRadius(16)
+          }
+          TextArea({ text: this.draft, placeholder: runtime.translate('输入消息…') })
+            .height(this.expandedComposer ? 220 : (this.state.running ? 54 : 68)).width('100%')
+            .fontSize(this.typography().bodySize).lineHeight(this.typography().bodyLineHeight + 2)
+            .fontColor(this.theme().ink).placeholderColor(this.theme().subtle)
+            .backgroundColor(Color.Transparent).padding({ left: 3, right: 3, top: 5, bottom: 3 })
+            .onChange((value: string) => { this.draft = value; runtime.perform('saveDraft', JSON.stringify({ id: this.lastSession, text: value })).catch(() => {}) })
+          Row({ space: 7 }) {
+            Button('＋').accessibilityText(runtime.translate('更多操作')).width(36).height(36).padding(0).fontSize(21)
+              .fontColor(this.theme().ink).backgroundColor(this.theme().surfaceStrong).borderRadius(18)
+              .onClick(() => { this.openMore() }).enabled(!this.state.busy && this.state.connected)
+            Button('⚡').accessibilityText(runtime.translate('快捷提示词')).width(36).height(36).padding(0).fontSize(16)
+              .fontColor(this.theme().ink).backgroundColor(this.theme().surfaceStrong).borderRadius(18)
+              .enabled(!this.state.busy && this.state.connected).onClick(() => { this.openPrompts() })
+            if (this.state.models.length > 0) {
+              Button(this.state.models[this.selectedModel]?.name ?? runtime.translate('模型'))
+                .layoutWeight(1).height(36).padding({ left: 12, right: 8 }).fontSize(13)
+                .fontColor(this.theme().muted).backgroundColor(Color.Transparent).borderRadius(999)
+                .enabled(!this.state.running && !this.state.busy)
+                .onClick(() => { this.showModels = !this.showModels })
+            } else {
+              Blank()
+            }
+            Button(this.expandedComposer ? '⌄' : '⤢').accessibilityText(runtime.translate(this.expandedComposer ? '收起输入' : '展开输入'))
+              .width(32).height(36).padding(0).fontSize(16).fontColor(this.theme().muted).backgroundColor(Color.Transparent)
+              .onClick(() => { this.expandedComposer = !this.expandedComposer })
+            Button('↑').accessibilityText(runtime.translate('发送')).width(38).height(38).padding(0).fontSize(21).fontWeight(FontWeight.Medium)
+              .backgroundColor(this.state.connected && !this.state.busy && (this.draft.trim().length > 0 || this.image.length > 0 || this.state.stagedFiles.length > 0) ? this.accentColor() : this.theme().surfaceStrong)
+              .fontColor(this.state.connected && !this.state.busy && (this.draft.trim().length > 0 || this.image.length > 0 || this.state.stagedFiles.length > 0) ? this.theme().onPrimary : this.theme().subtle)
+              .borderRadius(19)
+              .enabled(this.state.connected && !this.state.busy && (this.state.botTarget.length === 0 || this.state.botReadOnly.length === 0) && (this.draft.trim().length > 0 || this.image.length > 0 || this.state.stagedFiles.length > 0))
+              .onClick(() => {
+                const text: string = this.draft
+                const failedCount: number = this.state.failedSends.length
+                const image: string = this.image
+                const images: PromptAttachment[] = this.promptImages.map((value: PromptAttachment): PromptAttachment => ({ data: value.data, mediaType: value.mediaType }))
+                runtime.perform('prompt', JSON.stringify({ text: text, images: images }))
+                  .then((success: boolean) => {
+                    const retained: boolean = this.state.failedSends.length > failedCount
+                    if ((success || retained) && this.draft === text) this.draft = ''
+                    if ((success || retained) && this.image === image) { this.image = ''; this.promptImages = [] }
+                    if (success || retained) runtime.perform('saveDraft', JSON.stringify({ id: this.lastSession, text: '' } as ActionInput)).catch(() => {})
+                  }).catch(() => {})
+              })
+          }.width('100%').alignItems(VerticalAlign.Center)
+        }.padding({ left: 10, right: 10, top: 8, bottom: 8 }).width('100%')
+          .backgroundColor(this.theme().surface).border({ width: 1, color: this.theme().separator })
+          .borderRadius(22).shadow({ radius: 10, color: this.theme().separator, offsetX: 0, offsetY: 3 })
+        Text(this.policyHint()).fontSize(10).lineHeight(14).fontColor(this.theme().subtle).textAlign(TextAlign.Center).width('100%')
+      }.width('100%').padding({ left: 16, right: 16, top: 4, bottom: Math.max(8, this.bottomSafeHeight + 8) })
     }.width('100%').layoutWeight(1)
   }
 
@@ -3729,7 +3825,7 @@ struct Index {
         else if (this.state.view === 'chat') { this.chat() }
         else if (this.state.view === 'botHome') { this.botSheet() }
         else { this.catalog() }
-        }.layoutWeight(1).height('100%').backgroundColor(this.theme().background)
+        }.layoutWeight(1).backgroundColor(this.theme().background)
       }.width('100%').height('100%')
       if (this.showHostSwitcher) {
         this.scrim()
