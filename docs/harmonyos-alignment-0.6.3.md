@@ -102,4 +102,4 @@ Intelligent UI 来源：dreamfarer-space/deepseek-harness-intelligent-ui，提�
 
 真机复现：新设备可登录、识别在线主机，WebRTC 已选通 LAN，随后页面报 `performance is not defined`。共享 ControlLease 在直连授权租约启动时以及 RemoteGateway 请求期限依赖 `performance.now()`；ArkTS 原生运行环境没有这一浏览器全局，Android runtime 自带该接口，导致两端表现不同。
 
-在平台初始化时，仅当该接口缺失才注入 HarmonyOS systemDateTime STARTUP 单调毫秒时钟，包含深度休眠时间；不使用会受系统时间调整影响的 Date.now() 替代。已有 Performance 实现保留。新增无 Performance 环境下的共享租约接入及回拨/休眠过期回归测试。SDK 检查、97 tests、原生构建通过。修复包在桌面，HoKit 文件选择的自动操作受阻，已请用户完成签装；真实连接验收仍待更新后确认。尚未宣称服务器全部场景正常，结论仅针对已复现异常。
+在平台初始化时，仅当该接口缺失才注入 HarmonyOS systemDateTime STARTUP 单调毫秒时钟，包含深度休眠时间；不使用会受系统时间调整影响的 Date.now() 替代。已有 Performance 实现保留。新增无 Performance 环境下的共享租约接入及回拨/休眠过期回归测试。SDK 检查、97 tests、原生构建通过。用户完成 HoKit 签装后，HDC 确认手机版本为 harmony.30 / 6831。真机已成功建立 Noise IK LAN 连接并加载工作区、Harness/CodeX 目录计数及会话列表；刷新和约半分钟 Home 后返回仍保持可用。本次未发送消息、未清理账号，未观察到原 Performance 异常。该结果不代表长时后台、网络切换或各后端所有交互均已验收。尚未宣称服务器全部场景正常，结论仅针对已复现异常。
