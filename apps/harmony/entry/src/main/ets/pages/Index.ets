@@ -3153,13 +3153,13 @@ struct Index {
   @Builder
   workspaceSessions(id: string) {
     ForEach(this.workspaceChildren(id), (child: OverviewRow) => {
-      Row({ space: 8 }) {
-        Text(child.kind === 'more' ? '…' : '☰').fontSize(14).width(24).flexShrink(0).fontColor(this.theme().muted)
-        Column({ space: 4 }) {
-          Text(child.name).fontSize(15).maxLines(2).textOverflow({ overflow: TextOverflow.Ellipsis }).width('100%')
-          if (child.kind !== 'more') Text(child.description + ' · ' + child.meta).fontSize(11).width('100%').maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis }).fontColor(this.theme().muted)
+      Row({ space: 6 }) {
+        Text(child.kind === 'more' ? '…' : '☰').fontSize(13).width(20).flexShrink(0).fontColor(this.theme().muted)
+        Column({ space: 2 }) {
+          Text(child.name).fontSize(14).lineHeight(18).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis }).width('100%')
+          if (child.kind !== 'more') Text(child.description + ' · ' + child.meta).fontSize(11).lineHeight(15).width('100%').maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis }).fontColor(this.theme().muted)
         }.layoutWeight(1).alignItems(HorizontalAlign.Start)
-      }.padding({ left: 30, right: 12, top: 12, bottom: 12 }).width('100%')
+      }.padding({ left: 26, right: 10, top: 8, bottom: 8 }).width('100%')
         .accessibilityText(child.name).onClick(() => { this.send(child.kind === 'more' ? 'showMore' : 'session', { id: child.kind === 'more' ? child.target : child.id }) })
     }, (child: OverviewRow) => `${child.id}|${child.name}|${child.meta}`)
   }
@@ -3265,20 +3265,20 @@ struct Index {
 
   @Builder
   homeModeSwitcher() {
-    Row({ space: 4 }) {
-      Button('▦  智能体').layoutWeight(1).height(40)
-        .fontSize(14).fontWeight(this.homeMode() === 'agent' ? FontWeight.Bold : FontWeight.Medium)
+    Row({ space: 3 }) {
+      Button('▦  智能体').layoutWeight(1).height(36)
+        .fontSize(13).fontWeight(this.homeMode() === 'agent' ? FontWeight.Bold : FontWeight.Medium)
         .backgroundColor(this.homeMode() === 'agent' ? this.theme().surface : Color.Transparent)
         .fontColor(this.homeMode() === 'agent' ? this.accentColor() : this.theme().muted)
         .borderRadius(999)
         .onClick(() => { if (this.homeMode() !== 'agent') this.send('agentHome', {}) })
-      Button('◫  DS-Bot').layoutWeight(1).height(40)
-        .fontSize(14).fontWeight(this.homeMode() === 'bot' ? FontWeight.Bold : FontWeight.Medium)
+      Button('◫  DS-Bot').layoutWeight(1).height(36)
+        .fontSize(13).fontWeight(this.homeMode() === 'bot' ? FontWeight.Bold : FontWeight.Medium)
         .backgroundColor(this.homeMode() === 'bot' ? this.theme().surface : Color.Transparent)
         .fontColor(this.homeMode() === 'bot' ? this.accentColor() : this.theme().muted)
         .borderRadius(999)
         .onClick(() => { if (this.homeMode() !== 'bot') this.send('botHome', {}) })
-    }.width('100%').padding(4).backgroundColor(this.theme().surfaceStrong).borderRadius(999)
+    }.width('100%').padding(3).backgroundColor(this.theme().surfaceStrong).borderRadius(999)
   }
 
   @Builder
@@ -3313,27 +3313,27 @@ struct Index {
   @Builder
   workspaceHomeCard(row: CatalogRow) {
     Column() {
-      Row({ space: 10 }) {
+      Row({ space: 8 }) {
         Text(this.workspaceExpanded(row.id) ? '▰' : '▱')
-          .fontSize(20).width(28).textAlign(TextAlign.Center)
+          .fontSize(18).width(24).textAlign(TextAlign.Center)
           .fontColor(this.workspaceExpanded(row.id) ? this.accentColor() : this.theme().muted)
-        Text(row.name).fontSize(16).lineHeight(22).fontWeight(FontWeight.Medium)
+        Text(row.name).fontSize(15).lineHeight(20).fontWeight(FontWeight.Medium)
           .fontColor(this.theme().ink).layoutWeight(1).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
         if (row.count > 0) {
-          Text(`${row.count}`).fontSize(12).fontColor(this.theme().muted)
-            .backgroundColor(this.theme().surfaceStrong).padding({ left: 7, right: 7, top: 2, bottom: 2 }).borderRadius(999)
+          Text(`${row.count}`).fontSize(11).fontColor(this.theme().muted)
+            .backgroundColor(this.theme().surfaceStrong).padding({ left: 6, right: 6, top: 1, bottom: 1 }).borderRadius(999)
         }
-        Button('+').accessibilityText(runtime.translate('在此工作区新建对话')).fontSize(21).width(34).height(38).padding(0)
+        Button('+').accessibilityText(runtime.translate('在此工作区新建对话')).fontSize(18).width(30).height(34).padding(0)
           .backgroundColor(Color.Transparent).fontColor(this.theme().muted).enabled(!this.state.busy)
           .onClick(() => { this.send('newSessionIn', { id: row.id }) })
-        Button('⋮').accessibilityText(runtime.translate('管理工作区')).fontSize(20).width(34).height(38).padding(0)
+        Button('⋮').accessibilityText(runtime.translate('管理工作区')).fontSize(18).width(30).height(34).padding(0)
           .backgroundColor(Color.Transparent).fontColor(this.theme().muted)
           .onClick(() => { this.manageTarget = row; this.workspaceName = row.name; this.confirmDelete = '' })
-        Text(this.workspaceExpanded(row.id) ? '⌄' : '›').fontSize(18).fontColor(this.theme().subtle)
-      }.width('100%').height(58).padding({ left: 14, right: 10 })
+        Text(this.workspaceExpanded(row.id) ? '⌄' : '›').fontSize(16).fontColor(this.theme().subtle)
+      }.width('100%').height(50).padding({ left: 12, right: 8 })
         .onClick(() => { this.toggleWorkspace(row.id) })
       if (this.workspaceExpanded(row.id)) {
-        Divider().color(this.theme().separator).margin({ left: 48, right: 14 })
+        Divider().color(this.theme().separator).margin({ left: 42, right: 12 })
         this.workspaceSessions(row.id)
       }
     }.width('100%').backgroundColor(this.theme().card).borderRadius(18)
@@ -3346,18 +3346,18 @@ struct Index {
   @Builder
   homeCatalog() {
     Stack({ alignContent: Alignment.Bottom }) {
-      Column({ space: 12 }) {
+      Column({ space: 8 }) {
         this.homeModeSwitcher()
         if (this.state.recovering) {
-          Text(runtime.translate('正在恢复')).fontSize(12).fontColor(this.theme().warning).width('100%').padding({ top: 12 })
+          Text(runtime.translate('正在恢复')).fontSize(12).fontColor(this.theme().warning).width('100%').padding({ top: 6 })
         }
         Column() {
-          Row({ space: 12 }) {
-            Text('▣').fontSize(20).width(28).textAlign(TextAlign.Center).fontColor(this.theme().ink)
-            Text(runtime.translate('智能体平台')).fontSize(16).layoutWeight(1).fontColor(this.theme().ink)
-            Text(this.homeBackendName()).fontSize(14).fontColor(this.theme().muted).maxLines(1)
-            Text(this.homeBackendOpen ? '⌄' : '›').fontSize(18).fontColor(this.theme().subtle)
-          }.width('100%').height(58).padding({ left: 14, right: 12 })
+          Row({ space: 10 }) {
+            Text('▣').fontSize(18).width(26).textAlign(TextAlign.Center).fontColor(this.theme().ink)
+            Text(runtime.translate('智能体平台')).fontSize(15).layoutWeight(1).fontColor(this.theme().ink)
+            Text(this.homeBackendName()).fontSize(13).fontColor(this.theme().muted).maxLines(1)
+            Text(this.homeBackendOpen ? '⌄' : '›').fontSize(17).fontColor(this.theme().subtle)
+          }.width('100%').height(50).padding({ left: 12, right: 10 })
             .onClick(() => { this.homeBackendOpen = !this.homeBackendOpen })
           if (this.homeBackendOpen) {
             Scroll() {
@@ -3368,46 +3368,46 @@ struct Index {
                     .fontColor(this.state.backend === tab.id ? this.accentColor() : this.theme().ink).borderRadius(999)
                     .onClick(() => { this.send('backend', { backend: tab.id }); this.homeBackendOpen = false })
                 }, (tab: BackendTab) => `${tab.id}|${tab.count}|${this.state.backend === tab.id ? 'on' : 'off'}`)
-              }.padding({ left: 52, right: 12, bottom: 12 })
+              }.padding({ left: 46, right: 10, bottom: 10 })
             }.scrollable(ScrollDirection.Horizontal).scrollBar(BarState.Off).width('100%')
           }
           this.settingsDivider()
-          Row({ space: 12 }) {
-            Text('⬡').fontSize(20).width(28).textAlign(TextAlign.Center).fontColor(this.theme().ink)
-            Text(runtime.translate('插件')).fontSize(16).layoutWeight(1).fontColor(this.theme().ink)
-            Text('›').fontSize(18).fontColor(this.theme().subtle)
-          }.width('100%').height(58).padding({ left: 14, right: 12 })
+          Row({ space: 10 }) {
+            Text('⬡').fontSize(18).width(26).textAlign(TextAlign.Center).fontColor(this.theme().ink)
+            Text(runtime.translate('插件')).fontSize(15).layoutWeight(1).fontColor(this.theme().ink)
+            Text('›').fontSize(17).fontColor(this.theme().subtle)
+          }.width('100%').height(50).padding({ left: 12, right: 10 })
             .onClick(() => { this.openPlugins() })
           this.settingsDivider()
-          Row({ space: 12 }) {
-            Text('◷').fontSize(19).width(28).textAlign(TextAlign.Center).fontColor(this.theme().ink)
-            Text(runtime.translate('自动化任务')).fontSize(16).layoutWeight(1).fontColor(this.theme().ink)
-            Text('›').fontSize(18).fontColor(this.theme().subtle)
-          }.width('100%').height(58).padding({ left: 14, right: 12 })
+          Row({ space: 10 }) {
+            Text('◷').fontSize(17).width(26).textAlign(TextAlign.Center).fontColor(this.theme().ink)
+            Text(runtime.translate('自动化任务')).fontSize(15).layoutWeight(1).fontColor(this.theme().ink)
+            Text('›').fontSize(17).fontColor(this.theme().subtle)
+          }.width('100%').height(50).padding({ left: 12, right: 10 })
             .onClick(() => { this.openTasks() })
         }.width('100%').backgroundColor(this.theme().grouped).borderRadius(22)
           .border({ width: 1, color: this.theme().separator })
 
-        Row({ space: 2 }) {
-          Text(runtime.translate('工作区')).fontSize(15).fontColor(this.theme().muted).layoutWeight(1)
-          Button('⌕').accessibilityText(runtime.translate('搜索')).fontSize(18).width(38).height(38).padding(0)
+        Row({ space: 1 }) {
+          Text(runtime.translate('工作区')).fontSize(14).fontColor(this.theme().muted).layoutWeight(1)
+          Button('⌕').accessibilityText(runtime.translate('搜索')).fontSize(17).width(34).height(34).padding(0)
             .backgroundColor(Color.Transparent).fontColor(this.drawerSearch ? this.accentColor() : this.theme().muted)
             .onClick(() => { this.drawerSearch = !this.drawerSearch; if (!this.drawerSearch) this.query = '' })
-          Button('☷').accessibilityText(runtime.translate('视图选项')).fontSize(18).width(38).height(38).padding(0)
+          Button('☷').accessibilityText(runtime.translate('视图选项')).fontSize(17).width(34).height(34).padding(0)
             .backgroundColor(Color.Transparent).fontColor(this.drawerOptions ? this.accentColor() : this.theme().muted)
             .onClick(() => { this.drawerOptions = !this.drawerOptions })
-          Button('▱+').accessibilityText(runtime.translate('新建工作区')).fontSize(16).width(42).height(38).padding(0)
+          Button('▱+').accessibilityText(runtime.translate('新建工作区')).fontSize(15).width(38).height(34).padding(0)
             .backgroundColor(Color.Transparent).fontColor(this.theme().muted)
             .onClick(() => { this.showWorkspaceCreator = !this.showWorkspaceCreator })
-        }.width('100%').padding({ top: 8 })
+        }.width('100%').padding({ top: 2 })
         if (this.drawerSearch) {
           TextInput({ text: this.query, placeholder: runtime.translate('搜索工作区或会话') })
-            .height(42).fontSize(14).fontColor(this.theme().ink).placeholderColor(this.theme().muted)
+            .height(38).fontSize(13).fontColor(this.theme().ink).placeholderColor(this.theme().muted)
             .backgroundColor(this.theme().surfaceStrong).borderRadius(999)
             .onChange((value: string) => { this.query = value })
         }
         if (this.drawerOptions) { this.viewOptions() }
-        List({ space: 8 }) {
+        List({ space: 6 }) {
           ForEach(this.state.workspaces.filter((row: CatalogRow) =>
             (row.name + row.description).toLowerCase().includes(this.query.trim().toLowerCase())),
           (row: CatalogRow) => {
@@ -3422,7 +3422,7 @@ struct Index {
               }.width('100%').padding(28)
             }
           }
-        }.layoutWeight(1).width('100%').padding({ bottom: 86 + this.bottomSafeHeight })
+        }.layoutWeight(1).width('100%').padding({ bottom: 4 })
         if (this.showWorkspaceCreator) {
           Row({ space: 8 }) {
             TextInput({ text: this.directory, placeholder: runtime.translate('Harness 新工作区的绝对路径') }).layoutWeight(1)
@@ -3723,26 +3723,48 @@ struct Index {
         }
         Column({ space: 6 }) {
           if (this.showModels) {
-            Column({ space: 8 }) {
-              Row({ space: 8 }) {
-                Text(runtime.translate('模型')).fontSize(12).fontColor(this.theme().muted).width(44)
-                Select(this.state.models.map((model: ModelRow): SelectOption => ({ value: model.name })))
-                  .selected(this.selectedModel).value('选择模型').layoutWeight(1)
-                  .onSelect((index: number) => { this.selectedModel = index; this.effort = '' })
-              }.width('100%')
+            Column({ space: 10 }) {
+              Text(runtime.translate('模型')).fontSize(13).lineHeight(18).fontWeight(FontWeight.Medium)
+                .fontColor(this.theme().muted).width('100%')
+              Scroll() {
+                Column({ space: 4 }) {
+                  ForEach(this.state.models, (model: ModelRow, index: number) => {
+                    Row({ space: 8 }) {
+                      Text(model.name).fontSize(13).lineHeight(18).layoutWeight(1).maxLines(2)
+                        .textOverflow({ overflow: TextOverflow.Ellipsis })
+                        .fontColor(this.selectedModel === index ? this.accentColor() : this.theme().ink)
+                      if (this.selectedModel === index) {
+                        Text('✓').fontSize(14).fontColor(this.accentColor())
+                      }
+                    }.width('100%').padding({ left: 10, right: 10, top: 8, bottom: 8 })
+                      .backgroundColor(this.selectedModel === index ? this.theme().primarySoft : this.theme().surfaceStrong)
+                      .borderRadius(12)
+                      .accessibilityText(model.name)
+                      .onClick(() => { this.selectedModel = index; this.effort = '' })
+                  }, (model: ModelRow, index: number) => `${model.id}|${this.selectedModel === index ? 'selected' : 'idle'}`)
+                }.width('100%')
+              }.width('100%').constraintSize({ maxHeight: 206 }).scrollBar(BarState.Auto)
               if (this.state.models[this.selectedModel]?.efforts.length > 0) {
-                Row({ space: 8 }) {
-                  Text(runtime.translate('思考')).fontSize(12).fontColor(this.theme().muted).width(44)
-                  Select(this.state.models[this.selectedModel].efforts.map((item: ModelEffort): SelectOption => ({ value: item.name })))
-                    .value('思考强度').layoutWeight(1)
-                    .onSelect((index: number) => { this.effort = this.state.models[this.selectedModel].efforts[index].id })
+                Column({ space: 6 }) {
+                  Text(runtime.translate('思考强度')).fontSize(13).lineHeight(18).fontWeight(FontWeight.Medium)
+                    .fontColor(this.theme().muted).width('100%')
+                  Scroll() {
+                    Row({ space: 6 }) {
+                      ForEach(this.state.models[this.selectedModel].efforts, (item: ModelEffort) => {
+                        Button(item.name).height(34).fontSize(13).padding({ left: 12, right: 12 })
+                          .backgroundColor(this.effort === item.id ? this.theme().primarySoft : this.theme().surfaceStrong)
+                          .fontColor(this.effort === item.id ? this.accentColor() : this.theme().ink)
+                          .borderRadius(999).onClick(() => { this.effort = item.id })
+                      }, (item: ModelEffort) => `${item.id}|${this.effort === item.id ? 'selected' : 'idle'}`)
+                    }
+                  }.width('100%').scrollable(ScrollDirection.Horizontal).scrollBar(BarState.Off)
                 }.width('100%')
               }
               Row({ space: 8 }) {
-                Button(runtime.translate('取消')).layoutWeight(1).height(36).fontSize(12)
+                Button(runtime.translate('取消')).layoutWeight(1).height(38).fontSize(13)
                   .backgroundColor(this.theme().surfaceStrong).fontColor(this.theme().ink).borderRadius(999)
                   .onClick(() => { this.showModels = false })
-                Button(runtime.translate('应用')).layoutWeight(1).height(36).fontSize(12)
+                Button(runtime.translate('应用')).layoutWeight(1).height(38).fontSize(13)
                   .backgroundColor(this.accentColor()).fontColor(this.theme().onPrimary).borderRadius(999)
                   .onClick(() => {
                     const model: ModelRow = this.state.models[this.selectedModel]
@@ -3750,7 +3772,7 @@ struct Index {
                     this.showModels = false
                   })
               }.width('100%')
-            }.width('100%').padding(10).backgroundColor(this.theme().background).borderRadius(16)
+            }.width('100%').padding(12).backgroundColor(this.theme().background).borderRadius(16)
           }
           TextArea({ text: this.draft, placeholder: runtime.translate('输入消息…') })
             .height(this.expandedComposer ? 220 : (this.state.running ? 54 : 68)).width('100%')
