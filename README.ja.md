@@ -25,6 +25,10 @@
   <a href="https://dshfind.com/ja/plugins/liguobao/ds-harness-remote?ref=badge"><img src="https://dshfind.com/api/badge/liguobao/ds-harness-remote?metric=downloads&amp;lang=ja" alt="dshfind ダウンロード数"></a>
 </p>
 
+<p align="center">
+  <a href="https://trendshift.io/repositories/177732" target="_blank"><img src="https://trendshift.io/api/badge/repositories/177732" alt="liguobao%2Fds-harness-remote | Trendshift" style="width: 250px; height: 55px;" width="250" height="55"/></a>
+</p>
+
 ## 一度つなげば、いつでも使える
 
 スマートフォン、パソコン、ブラウザーから、お使いの DeepSeek Harness をそのまま利用できます。どのデバイスからでも、同じ Harness セッションの続きを始められます。
@@ -55,9 +59,10 @@ DeepSeek Harness デスクトップ版に対応しています。最新リリー
 | DSH プラグイン | Remote サイドバー | 対応 | 他のデバイスを操作する側にも、操作される Host 側にも自由に使えます！ |
 | Web | ブラウザーページ | 対応 | [https://dsh.r2049.cn](https://dsh.r2049.cn) を開きます。ネイティブの Harness UI を再利用します |
 | Android | ネイティブアプリ | 対応 | [Releases](https://github.com/liguobao/ds-harness-remote/releases/latest) から APK をダウンロードできます。[Android ガイド](apps/android/README.md)を参照してください |
+| HarmonyOS | ネイティブアプリ | 対応済み | [Releases](https://github.com/liguobao/ds-harness-remote/releases/latest) からダウンロード |
 | DSH Go | ccch1mneyyy 氏の力作 | 対応済み | 詳細：[ccch1mneyyy/dsh-go: スマートフォンで直接実行したり、パソコン上の DSH をリモート操作したりできます。](https://github.com/ccch1mneyyy/dsh-go) |
 | iOS | TestFlight ベータ | ベータ | 一般公開はまだ行っていません。[Issue #20](https://github.com/liguobao/ds-harness-remote/issues/20) を参照してください |
-| dsh-TUI | ターミナル専用 CLI | 予定 | このリリースには統合を含まず、後続バージョンで個別に提供します。インストーラーが自動的に Web サービスを作成することはありません |
+| dsh-TUI | 独立 Host バンドル + CLI | 主要な実機検証済み | 同じバージョンの `ds-harness-remote-tui` を導入。[検証範囲](docs/compatibility.md)を参照。Web サービスは自動作成されません |
 | Linux | クラウドサーバー | 対応 | [公式サイト](https://dsh.r2049.cn/)にログインすると、ワンコマンドでインストールできます。 |
 
 複数のクライアントから同じ Host に同時接続できます。RPC 呼び出しとストリームは接続ごとに分離されます。
@@ -164,7 +169,7 @@ Host はローカルの ACP 対応 Agent を起動し、ds-harness-remote を通
 
 Claude と Hermes はファイルとターミナルへの直接アクセスにも対応し、Host のワークスペース境界とターミナル設定に従います。
 
-セットアップとアダプター開発については、[Agent ワークスペース連携ガイド](docs/acp-integration.md)を参照してください。
+セットアップとアダプター開発については、[Agent ワークスペース連携ガイド](docs/acp-remote.md)を参照してください。
 
 Desktop／Android での Cursor、Claude、Hermes、Pi、OpenCode、AGY のモデル選択には Host の実際のモデル一覧を使用し、Agent の ACP インターフェースに従います。
 
@@ -268,6 +273,7 @@ DS Bot は DeepSeek Harness（dsh）を bot として利用できるようにす
 - [Codex Remote 技術ノート](docs/codex-remote.md)
 - [ACP Remote / Agent アダプターノート](docs/acp-remote.md)
 - [ドキュメント一覧](docs/README.md)
+- [コントリビューションガイド](CONTRIBUTING.md)（[简体中文](CONTRIBUTING.zh.md)）
 - [エンドツーエンド暗号化](docs/end-to-end-encryption.md)
 - [ネットワークと通信方式](docs/network.md)
 - [Remote プロトコル](docs/protocol.md)
@@ -280,7 +286,8 @@ DS Bot は DeepSeek Harness（dsh）を bot として利用できるようにす
 ## 関連リンク
 
 - 関連プロジェクト: [DSH Go](https://github.com/ccch1mneyyy/dsh-go) — DeepSeek Harness をポケットに。スマートフォン上で直接実行でき、パソコンのリモート操作も可能です。Remote 連携に対応しています。
-- 関連プロジェクト: [dsh-TUI](https://github.com/ccch1mneyyy/dsh-TUI) — ターミナル優先の Harness クライアントです。Remote 連携は後続バージョンで提供予定です。
+- 関連プロジェクト: [dsh-TUI](https://github.com/ccch1mneyyy/dsh-TUI) — ターミナル優先の Harness クライアントです。Remote Host 連携には独立した `ds-harness-remote-tui` バンドルを使用します。
+- 関連プロジェクト: [akazwz/hostc](https://github.com/akazwz/hostc) — コマンドひとつでローカルの開発サーバーを HTTPS で公開できます。WebSocket とホットリロードに対応し、Cloudflare Workers 上で動作します。アカウント登録は不要で、無料で利用できます。
 - 相互リンク: [LINUX DO](https://linux.do/)
 - 相互リンク: [Cyber Liu Kanshan](https://kanshan.r2049.cn/)
 
@@ -304,6 +311,8 @@ DS Bot は DeepSeek Harness（dsh）を bot として利用できるようにす
 - **ドキュメントと多言語対応**：利用ガイドの改善、表現のブラッシュアップ、英語・中国語・日本語ドキュメントの同期支援。
 - **実機テストとフィードバック**：お使いの環境（Desktop / Web / Android）で動作を試し、実際の使用感を教えてください。
 - **コードの作成とレビュー**：バグ修正、新機能の実装、またはコミュニティから寄せられた Pull Request のレビュー。
+
+開発環境の準備、検証コマンド、PR の進め方については [コントリビューションガイド](CONTRIBUTING.md)（[简体中文](CONTRIBUTING.zh.md)）をご覧ください。
 
 <p align="center">
   <a href="https://github.com/liguobao/ds-harness-remote/graphs/contributors">

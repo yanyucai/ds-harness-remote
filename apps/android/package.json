@@ -1,9 +1,10 @@
 {
   "name": "@dsh-remote/android",
-  "version": "0.6.5",
+  "version": "0.6.7",
   "type": "module",
   "main": "index.ts",
   "dependencies": {
+    "@dsh-remote/app-core": "workspace:*",
     "@dsh-remote/client-core": "workspace:*",
     "@dsh-remote/crypto": "workspace:*",
     "@dsh-remote/protocol": "workspace:*",
@@ -50,18 +51,17 @@
     "vitest": "^2.1.8"
   },
   "scripts": {
-    "prepare:workspace": "pnpm --filter '@dsh-remote/android^...' -r build && pnpm run verify:workspace && pnpm run build:renderers",
-    "build:renderers": "node scripts/build-terminal.mjs && node scripts/build-pdf.mjs && node scripts/build-mermaid.mjs && node scripts/build-intelligent-ui.mjs",
-    "verify:workspace": "node scripts/verify-workspace-data-planes.mjs",
+    "prepare:workspace": "pnpm --filter '@dsh-remote/android^...' -r build && pnpm run build:renderers && pnpm run verify:workspace && pnpm run clean:js-bundle",
+    "build:renderers": "pnpm --filter @dsh-remote/app-core run build:renderers",
+    "verify:workspace": "node ../../packages/app-core/scripts/verify-workspace-data-planes.mjs \"$PWD\"",
+    "clean:js-bundle": "node -e \"const fs=require('fs');for(const p of ['android/app/build/generated/assets/react','android/app/build/intermediates/assets','android/app/build/intermediates/merged_assets'])fs.rmSync(p,{recursive:true,force:true})\"",
     "prestart": "pnpm run prepare:workspace",
     "start": "expo start",
     "preandroid": "pnpm run prepare:workspace",
     "android": "expo run:android",
-    "preios": "pnpm run prepare:workspace",
-    "ios": "expo run:ios",
     "check": "pnpm run build:renderers && pnpm run verify:workspace && tsc --noEmit",
-    "test": "pnpm run build:renderers && pnpm run verify:workspace && vitest run",
     "prebuild": "pnpm run prepare:workspace",
+    "generate:android": "expo prebuild --platform android",
     "build": "expo export --platform android"
   },
   "private": true,

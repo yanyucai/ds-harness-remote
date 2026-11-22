@@ -12,6 +12,8 @@ import type {
 } from '@dsh-remote/protocol'
 import {
   CODEX_APP_TRANSFER_CHUNK_BYTES,
+  createEvent,
+  encodeMessage,
   MAX_ACTIVE_TRANSFERS_PER_DIRECTION,
   MAX_ALPHA_STREAMS_PER_CONNECTION,
   MAX_CODEX_APP_TRANSFER_BYTES,
@@ -22,7 +24,7 @@ import { z } from 'zod'
 import type { PeerConnectionContext } from '../connection-controller.js'
 import type { SafeLogger } from '../logging.js'
 import { RpcError } from '../safe-error.js'
-import type { CodexRemoteDomain } from './domain.js'
+import { MAX_BUFFERED_CODEX_FRAMES, type CodexRemoteDomain } from './domain.js'
 
 export type PublishCodexFrame = (
   event: 'codex.app.frame' | 'codex.app.stream.closed',
@@ -42,6 +44,12 @@ interface OutgoingTransfer {
   totalChunks: number
   nextIndex: number
   touchedAt: number
+}
+
+interface OpeningStream {
+  threadId: string
+  queue: Array<{ method: string; params: unknown }>
+  truncated: boolean
 }
 
 const streamOpenSchema = z.object({
@@ -70,6 +78,8 @@ const INLINE_TRANSFER_RESPONSE_BYTES = 2 * 1024 * 1024
 export class CodexPeerBridge {
   compactHistoryEnabled = false
   private readonly streams = new Map<string, string>()
+  private readonly openingStreams = new Map<string, OpeningStream>()
+  private readonly pendingOpens = new Map<string, { threadId: string; cancelled: boolean }>()
   private readonly incomingTransfers = new Map<string, IncomingTransfer>()
   private readonly outgoingTransfers = new Map<string, OutgoingTransfer>()
   private closed = false
@@ -106,26 +116,107 @@ export class CodexPeerBridge {
     return this.domain.respond(this.context.connectionId, input)
   }
 
-  async openStream(input: unknown): Promise<{ opened: true; streamId: string; threadId: string }> {
+  async openStream(input: unknown): Promise<{ opened: true; streamId: string; threadId: string; replayTruncated?: true }> {
     this.requireOpen()
     const params = streamOpenSchema.parse(input)
-    if (this.streams.has(params.streamId)) throw new RpcError('REQUEST_CONFLICT', 'The Codex stream id is already active.')
-    if (this.streams.size >= MAX_ACTIVE_STREAMS) {
+    if (this.streams.has(params.streamId) || this.openingStreams.has(params.streamId) || this.pendingOpens.has(params.streamId)) {
+      throw new RpcError('REQUEST_CONFLICT', 'The Codex stream id is already active.')
+    }
+    if (this.streams.size + this.openingStreams.size + this.pendingOpens.size >= MAX_ACTIVE_STREAMS) {
       throw new RpcError('RATE_LIMITED', 'Too many Codex streams are active for this connection.', undefined, true)
     }
-    // A bounded summary call proves this connection may observe the thread.
-    await this.domain.call(this.context.connectionId, {
-      method: 'thread/read',
-      params: { threadId: params.threadId, includeTurns: false },
-    })
-    this.requireOpen()
-    this.streams.set(params.streamId, params.threadId)
-    return { opened: true, streamId: params.streamId, threadId: params.threadId }
+    const pending = { threadId: params.threadId, cancelled: false }
+    this.pendingOpens.set(params.streamId, pending)
+    let replayTruncated = false
+    try {
+      await this.domain.useThread(params.threadId, async () => {
+        await this.domain.call(this.context.connectionId, {
+          method: 'thread/read',
+          params: { threadId: params.threadId, includeTurns: false },
+        })
+        this.requireOpen()
+        if (pending.cancelled || this.pendingOpens.get(params.streamId) !== pending) {
+          throw new RpcError('CODEX_CONNECTION_CLOSED', 'The Codex stream was closed while opening.')
+        }
+        this.pendingOpens.delete(params.streamId)
+        if (this.streams.has(params.streamId) || this.openingStreams.has(params.streamId)) {
+          throw new RpcError('REQUEST_CONFLICT', 'The Codex stream id is already active.')
+        }
+        if (this.streams.size + this.openingStreams.size + this.pendingOpens.size >= MAX_ACTIVE_STREAMS) {
+          throw new RpcError('RATE_LIMITED', 'Too many Codex streams are active for this connection.', undefined, true)
+        }
+        const opening: OpeningStream = { threadId: params.threadId, queue: [], truncated: false }
+        this.openingStreams.set(params.streamId, opening)
+        try {
+          const replay = typeof this.domain.replayBufferedFrames === 'function'
+            ? await this.domain.replayBufferedFrames(this.context.connectionId, params.streamId, params.threadId)
+            : { replayed: 0, truncated: false }
+          replayTruncated = replay.truncated
+          while (opening.queue.length > 0) {
+            this.requireOpen()
+            if (this.openingStreams.get(params.streamId) !== opening) {
+              throw new RpcError('CODEX_CONNECTION_CLOSED', 'The Codex stream was closed while opening.')
+            }
+            if (opening.truncated) {
+              replayTruncated = true
+              opening.truncated = false
+            }
+            const frame = opening.queue.shift()!
+            try {
+              await this.publishReplayFrame(params.streamId, frame)
+            } catch (error) {
+              if (isResponseTooLargeError(error)) {
+                this.logger?.warn('Skipped oversized staged Codex frame during stream open', {
+                  streamId: params.streamId,
+                  method: frame.method,
+                })
+                continue
+              }
+              opening.queue.unshift(frame)
+              throw error
+            }
+          }
+          this.requireOpen()
+          if (this.openingStreams.get(params.streamId) !== opening) {
+            throw new RpcError('CODEX_CONNECTION_CLOSED', 'The Codex stream was closed while opening.')
+          }
+          if (opening.truncated) replayTruncated = true
+          this.openingStreams.delete(params.streamId)
+          this.streams.set(params.streamId, params.threadId)
+        } catch (error) {
+          if (this.openingStreams.get(params.streamId) === opening) {
+            this.openingStreams.delete(params.streamId)
+          }
+          if (opening.queue.length > 0 && typeof this.domain.rebufferOpeningFrames === 'function') {
+            this.domain.rebufferOpeningFrames(params.threadId, opening.queue, replayTruncated || opening.truncated)
+          }
+          throw error
+        }
+      })
+    } finally {
+      if (this.pendingOpens.get(params.streamId) === pending) {
+        this.pendingOpens.delete(params.streamId)
+      }
+    }
+    return {
+      opened: true,
+      streamId: params.streamId,
+      threadId: params.threadId,
+      ...(replayTruncated ? { replayTruncated: true as const } : {}),
+    }
   }
 
-  closeStream(input: unknown): { closed: true; streamId: string } {
+  async closeStream(input: unknown): Promise<{ closed: true; streamId: string }> {
     const params = streamCloseSchema.parse(input)
+    const pending = this.pendingOpens.get(params.streamId)
+    if (pending !== undefined) {
+      pending.cancelled = true
+      this.pendingOpens.delete(params.streamId)
+    }
+    const threadId = this.streams.get(params.streamId) ?? this.openingStreams.get(params.streamId)?.threadId
     this.streams.delete(params.streamId)
+    this.openingStreams.delete(params.streamId)
+    if (threadId !== undefined) await this.domain.releaseThread(threadId)
     return { closed: true, streamId: params.streamId }
   }
 
@@ -236,6 +327,9 @@ export class CodexPeerBridge {
     const end = Math.min(start + CODEX_APP_TRANSFER_CHUNK_BYTES, transfer.bytes.byteLength)
     transfer.nextIndex += 1
     transfer.touchedAt = Date.now()
+    if (transfer.nextIndex >= transfer.totalChunks) {
+      this.outgoingTransfers.delete(params.transferId)
+    }
     return {
       transferId: params.transferId,
       index: params.index,
@@ -250,25 +344,58 @@ export class CodexPeerBridge {
   }
 
   hasThreadSubscription(threadId: string): boolean {
-    return [...this.streams.values()].includes(threadId)
+    for (const target of this.streams.values()) if (target === threadId) return true
+    for (const opening of this.openingStreams.values()) if (opening.threadId === threadId) return true
+    return false
   }
 
   removeThreadSubscriptions(threadId: string): void {
     for (const [streamId, targetThreadId] of this.streams) {
       if (targetThreadId === threadId) this.streams.delete(streamId)
     }
+    for (const [streamId, opening] of this.openingStreams) {
+      if (opening.threadId === threadId) this.openingStreams.delete(streamId)
+    }
+    for (const [streamId, pending] of this.pendingOpens) {
+      if (pending.threadId !== threadId) continue
+      pending.cancelled = true
+      this.pendingOpens.delete(streamId)
+    }
+  }
+
+  async publishReplayFrame(streamId: string, frame: { method: string; params: unknown }): Promise<void> {
+    this.requireOpen()
+    const data: CodexAppFrameData = { streamId, frame }
+    if (encodeMessage(createEvent('codex.app.frame', data)).byteLength > MAX_SECURE_MESSAGE_BYTES) {
+      this.logger?.warn('Skipped oversized buffered Codex frame during replay', { streamId, method: frame.method })
+      return
+    }
+    await this.publish('codex.app.frame', data)
   }
 
   async publishInbound(threadId: string, frame: { method: string; params: unknown }): Promise<void> {
     if (this.closed) return
+    for (const [streamId, opening] of this.openingStreams) {
+      if (opening.threadId !== threadId) continue
+      if (encodeMessage(createEvent('codex.app.frame', { streamId, frame })).byteLength > MAX_SECURE_MESSAGE_BYTES) {
+        this.logger?.warn('Skipped oversized live Codex frame while stream is opening', { streamId, method: frame.method })
+        continue
+      }
+      opening.queue.push(frame)
+      while (opening.queue.length > MAX_BUFFERED_CODEX_FRAMES) {
+        opening.queue.shift()
+        opening.truncated = true
+      }
+    }
     const streamIds = [...this.streams.entries()]
       .filter(([, targetThreadId]) => targetThreadId === threadId)
       .map(([streamId]) => streamId)
     for (const streamId of streamIds) {
       const data: CodexAppFrameData = { streamId, frame }
-      if (new TextEncoder().encode(JSON.stringify(data)).byteLength > MAX_SECURE_MESSAGE_BYTES) {
+      if (encodeMessage(createEvent('codex.app.frame', data)).byteLength > MAX_SECURE_MESSAGE_BYTES) {
         this.streams.delete(streamId)
-        await this.publish('codex.app.stream.closed', { streamId, reason: 'failed' })
+        void this.domain.releaseThread(threadId).catch(() => undefined)
+        await this.publish('codex.app.stream.closed', { streamId, reason: 'failed' }).catch(() => undefined)
         this.logger?.warn('Codex stream closed after oversized frame', { streamId })
         continue
       }
@@ -276,12 +403,20 @@ export class CodexPeerBridge {
     }
   }
 
-  async failStreams(reason: CodexAppStreamClosedData['reason'] = 'failed'): Promise<void> {
-    if (this.closed) return
-    const streamIds = [...this.streams.keys()]
+  private clearStreamState(): string[] {
+    const streamIds = [...new Set([...this.streams.keys(), ...this.openingStreams.keys()])]
+    for (const pending of this.pendingOpens.values()) pending.cancelled = true
+    this.pendingOpens.clear()
     this.streams.clear()
+    this.openingStreams.clear()
     this.incomingTransfers.clear()
     this.outgoingTransfers.clear()
+    return streamIds
+  }
+
+  async failStreams(reason: CodexAppStreamClosedData['reason'] = 'failed'): Promise<void> {
+    if (this.closed) return
+    const streamIds = this.clearStreamState()
     await Promise.all(streamIds.map(streamId => this.publish('codex.app.stream.closed', {
       streamId,
       reason,
@@ -291,10 +426,7 @@ export class CodexPeerBridge {
   async closeAll(): Promise<void> {
     if (this.closed) return
     this.closed = true
-    const streamIds = [...this.streams.keys()]
-    this.streams.clear()
-    this.incomingTransfers.clear()
-    this.outgoingTransfers.clear()
+    const streamIds = this.clearStreamState()
     const detach = this.domain.detachPeer(this.context.connectionId)
     await Promise.all([detach, ...streamIds.map(streamId => this.publish('codex.app.stream.closed', {
       streamId,
@@ -335,6 +467,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function safeErrorCode(error: unknown): string {
   if (isRecord(error) && typeof error.code === 'string') return error.code
   return 'UNKNOWN'
+}
+
+function isResponseTooLargeError(error: unknown): boolean {
+  return isRecord(error) && error.code === 'RESPONSE_TOO_LARGE'
 }
 
 function safeMethod(input: unknown): string {

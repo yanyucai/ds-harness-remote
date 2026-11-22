@@ -1,11 +1,12 @@
 import type { ControlResult } from './control-result.js'
 import { RemoteClientCore } from '@dsh-remote/client-core'
-import type { CodexAppFrameData, CodexAppStreamClosedData, RemoteWorkspaceTypeDescription } from '@dsh-remote/protocol'
+import type { AcpAuthDiagnostic, CodexAppFrameData, CodexAppStreamClosedData, RemoteWorkspaceTypeDescription } from '@dsh-remote/protocol'
 import type { RtcConnectionDiagnostics, RtcIceServer } from '@dsh-remote/webrtc'
 import { AdaptiveTransport, stunOnlyIceServers } from '@dsh-remote/webrtc'
 import type { ResolvedConfig } from './config.js'
 import type { TrustedPeer } from './identity-store.js'
-import type { AuthorizedPeerDevice, ServerHostDevice } from './server-api.js'
+import type { AccountVerification, AuthorizedPeerDevice, ServerHostDevice } from './server-api.js'
+import { AccountTwoFactorRequired } from './account-two-factor-required.js'
 
 export interface ConnectedRemote {
   client: RemoteClientCore
@@ -31,6 +32,7 @@ export interface RemoteHostFeatures {
   claude?: boolean
   hermes?: boolean
   acpModelLoadsSession?: boolean
+  acpOpencodeArchive?: boolean
   workspaceTypes?: readonly RemoteWorkspaceTypeDescription[]
   pluginRoute: boolean
 }
@@ -88,7 +90,7 @@ export interface RemoteWorkspaceView {
 export interface RemoteWorkspaceSelection {
   targetDeviceId: string
   workspaceId: string
-  backend?: 'harness' | 'codex' | 'cursor' | 'antigravity' | 'pi' | 'opencode' | 'claude' | 'hermes'
+  backend?: string
   sessionId?: string
 }
 
@@ -111,8 +113,14 @@ export interface HostConnectionRpc {
   ): () => Promise<void>
 }
 
+export interface HostConnectionAdmission {
+  rejection?: number
+  peer?: unknown
+}
+
 export interface HostConnectionHandle {
   requestRejection?(request: { headers: Record<string, string | string[] | undefined> }): number | undefined
+  admit?(request: { headers: Record<string, string | string[] | undefined> }): HostConnectionAdmission | undefined
   rpc: HostConnectionRpc
 }
 
@@ -140,12 +148,18 @@ export interface HostAuthorizationControl {
       mode?: 'LAN' | 'P2P' | 'TURN' | 'Relay'
     }>
   }
+  acpDiagnostics?(): Record<string, {
+    state: 'ready' | 'unavailable' | 'disabled'
+    errorCode?: string
+    auth: AcpAuthDiagnostic
+    capabilities: Record<string, unknown>
+  }>
   hasStoredAuthorization?(): Promise<boolean>
   reconnectHost(): void
   clearHostAuthorization(): Promise<void>
   localHarnessVersion?(): string | undefined
   authorizeHostAsOwned(accessToken: string, account?: string): Promise<unknown>
-  authorizeHostWithAccount(email: string, password: string): Promise<unknown>
+  authorizeHostWithAccount(email: string, password: string, verification?: AccountVerification): Promise<unknown>
   authorizeHostWithCode(code: string): Promise<unknown>
   codexStatus?(): { available: boolean }
   codexCall?(input: unknown, signal?: AbortSignal): Promise<unknown>
@@ -202,6 +216,16 @@ export function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
+export function readAccountVerification(value: unknown): AccountVerification | undefined {
+  if (value === undefined) return undefined
+  if (!isRecord(value) || typeof value.challenge !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(value.challenge)
+    || typeof value.code !== 'string' || value.code.trim().length === 0 || value.code.trim().length > 64
+    || typeof value.serverUrl !== 'string') {
+    throw new ClientModeError('INVALID_MESSAGE', 'Invalid two-factor verification input.')
+  }
+  return { challenge: value.challenge, code: value.code.trim(), serverUrl: value.serverUrl }
+}
+
 export function ok(value: unknown): ControlResult<unknown> { return { ok: true, value } }
 
 export function fail(error: unknown): ControlResult<unknown> {
@@ -217,7 +241,10 @@ export function fail(error: unknown): ControlResult<unknown> {
     error: {
       code: 'internal',
       message: source?.message ?? 'The remote-mode operation failed.',
-      details: remoteCode === undefined ? {} : { remoteCode, retryable },
+      details: {
+        ...(remoteCode === undefined ? {} : { remoteCode, retryable }),
+        ...(source instanceof AccountTwoFactorRequired ? { challenge: source.challenge, serverUrl: source.serverUrl } : {}),
+      },
     },
   }
 }

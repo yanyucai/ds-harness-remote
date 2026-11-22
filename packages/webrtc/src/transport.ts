@@ -11,9 +11,11 @@ export interface RemoteTransport {
 
 export interface SecureHandshakeTransport extends RemoteTransport {
   markSecureReady?(): void
+  retireRelayDataSocket?(isUpgradedLegActive?: () => boolean): void
   connectionInfo(): { connectionId: string; localDeviceId: string; remoteDeviceId: string }
   sendHandshake(step: number, data: Uint8Array): Promise<void>
   onHandshake(cb: (step: number, data: Uint8Array) => void): () => void
+  onSequencedMessage?(cb: (counter: number | undefined, data: Uint8Array) => void): () => void
 }
 
 type MessageHandler = (data: Uint8Array) => void

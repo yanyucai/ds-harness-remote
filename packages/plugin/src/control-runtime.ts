@@ -18,6 +18,8 @@ import {
 } from './identity-store.js'
 import { safeStartupError } from './safe-error.js'
 import { ClientServerApi, HostServerApi } from './server-api.js'
+import { readAccountVerification } from './client-runtime-contract.js'
+import { AccountTwoFactorRequired } from './account-two-factor-required.js'
 import { ServerCredentialStore, ServerCredentialsInvalidError } from './server-credentials.js'
 import { registerControlRoute, type HostWebServerLike } from './control-route.js'
 import { ControlStatusStream } from './control-stream.js'
@@ -25,7 +27,9 @@ import type { PluginUpdateSnapshot } from './update-check.js'
 import type { PluginSelfUpdateResult } from './plugin-self-update.js'
 import { codexBinaryCandidates } from './codex/domain.js'
 import { cursorBinaryCandidates } from './acp/gateway.js'
-import { defaultCheckExecutable, installOrConfigureBackend, isBuiltinAcpBackend } from './acp/backend-installer.js'
+import { isValidAcpBackendId } from './acp/method-policy.js'
+import { defaultCheckExecutable, installOrConfigureBackend, isBuiltinAcpBackend, lookupSystemPath } from './acp/backend-installer.js'
+import type { AcpAuthDiagnostic } from '@dsh-remote/protocol'
 import type { HostLogSnapshot, HostLogStore, PluginLogFilter } from './host-log-store.js'
 
 export interface PluginSettingsView {
@@ -36,6 +40,12 @@ export interface PluginSettingsView {
   association?: PluginAssociation
   associations: Partial<Record<'host' | 'client', PluginAssociation>>
   acpAvailability?: Record<string, boolean>
+  acpDiagnostics?: Record<string, {
+    state: 'ready' | 'unavailable' | 'disabled'
+    errorCode?: string
+    auth: AcpAuthDiagnostic
+    capabilities: Record<string, unknown>
+  }>
   acpInstallResult?: {
     backend: string
     action: 'configured' | 'installed' | 'download_required'
@@ -222,7 +232,7 @@ export class PluginControlRuntime {
         if (typeof value.email !== 'string' || typeof value.password !== 'string') {
           throw new ClientModeError('INVALID_MESSAGE', 'Email and password are required.')
         }
-        return ok(await this.host.authorizeHostWithAccount(value.email, value.password))
+        return ok(await this.host.authorizeHostWithAccount(value.email, value.password, readAccountVerification(value.verification)))
       }
       if (endpoint === 'host.registration-code.submit') {
         if (this.host === undefined) throw new ClientModeError('METHOD_NOT_ALLOWED', 'This plugin is not running as a Host.')
@@ -280,7 +290,7 @@ export class PluginControlRuntime {
       authorization = await api.authorizeWithAccount(identity, value.email, value.password, async () => {
         identity = await identities.reset(hostname())
         return identity
-      })
+      }, readAccountVerification(value.verification))
     }
     if (value.role === 'client' && resolveConfig(this.settings.get()).hostControl?.enabled !== false) {
       await this.client?.authorizeHostByDefault()
@@ -319,9 +329,11 @@ export class PluginControlRuntime {
     const flight = (async () => {
       await this.logoutFlight
       try {
-        const runtimes = await switchServer(this.config)
+        const targetConfig = this.settings === undefined ? this.config : resolveConfig(this.settings.get())
+        const runtimes = await switchServer(targetConfig)
         this.client = runtimes.client
         this.host = runtimes.host
+        this.config = targetConfig
         this.clearStartupFailure()
       } catch (error) {
         this.setStartupFailure(error)
@@ -346,8 +358,7 @@ export class PluginControlRuntime {
     if (typeof value.serverUrl !== 'string') {
       throw new ClientModeError('INVALID_MESSAGE', 'Server URL is required.')
     }
-    const current = editableConfig(resolveConfig(this.settings.get()))
-    const next = resolveConfig({ ...current, serverUrl: value.serverUrl })
+    const next = resolveConfig({ ...this.settings.get(), serverUrl: value.serverUrl })
     await this.settings.replace(editableConfig(next))
     if (this.switchServer !== undefined) {
       if (next.serverUrl !== this.config.serverUrl || this.startupFailure !== undefined) {
@@ -389,6 +400,11 @@ export class PluginControlRuntime {
       throw new ClientModeError('INVALID_MESSAGE', 'Role must be host, client, or all.')
     }
     const roles: RemoteDeviceRole[] = roleArg === 'client' ? ['client'] : roleArg === 'host' ? ['host'] : ['host', 'client']
+    if (this.switchServer === undefined && !this.storageAvailable) {
+      throw this.startupFailure instanceof Error
+        ? this.startupFailure
+        : new ClientModeError('SETTINGS_UNAVAILABLE', 'Remote storage is unavailable in this profile.')
+    }
     const config = this.settings === undefined ? this.config : resolveConfig(this.settings.get())
     const nextDirectory = await resetDefaultIdentityRoles(
       roles,
@@ -410,8 +426,7 @@ export class PluginControlRuntime {
       }
       return { ...await this.settingsView(), applies: 'live' }
     }
-    this.clearStartupFailure()
-    return { ...await this.settingsView(), applies: 'live' }
+    return { ...await this.settingsView(), applies: this.startupFailure === undefined ? 'live' : 'restart' }
   }
 
   private async setRole(payload: unknown): Promise<PluginSettingsView> {
@@ -434,7 +449,12 @@ export class PluginControlRuntime {
   }
 
   private currentLogLevel(): 'debug' | 'info' | 'warn' | 'error' {
-    return resolveConfig(this.settings === undefined ? this.config : this.settings.get()).logLevel
+    if (this.settings === undefined) return this.config.logLevel
+    try {
+      const raw = this.settings.get()?.logLevel
+      if (raw === 'debug' || raw === 'info' || raw === 'warn' || raw === 'error') return raw
+    } catch { /* Fall back to cached config level when raw settings cannot be read. */ }
+    return this.config.logLevel
   }
 
   private async getLogs(payload: unknown): Promise<PluginLogView> {
@@ -456,6 +476,9 @@ export class PluginControlRuntime {
   }
 
   private async clearLogs(): Promise<PluginLogView> {
+    if (this.settings === undefined) {
+      throw new ClientModeError('SETTINGS_UNAVAILABLE', 'DSH user settings are unavailable in this profile.')
+    }
     const logLevel = this.currentLogLevel()
     if (this.logStore === undefined) {
       return { logLevel, entries: [], totalBuffered: 0 }
@@ -552,11 +575,18 @@ export class PluginControlRuntime {
     if (typeof value.id !== 'string' || typeof value.command !== 'string' || !Array.isArray(value.args) || !value.args.every(item => typeof item === 'string')) {
       throw new ClientModeError('INVALID_MESSAGE', 'ACP name, command, and arguments are required.')
     }
+    const id = value.id.trim().toLowerCase()
+    const command = value.command.trim()
+    if (!command) throw new ClientModeError('INVALID_MESSAGE', 'ACP command is required.')
+    if (id === 'kimi') throw new ClientModeError('INVALID_MESSAGE', 'Kimi is not implemented.')
+    if (!isValidAcpBackendId(id)) {
+      throw new ClientModeError('INVALID_MESSAGE', 'ACP backend id must match ^[a-z0-9][a-z0-9_-]{0,31}$ and cannot use reserved names.')
+    }
     const current = resolveConfig(this.settings.get())
-    if (value.id === 'kimi') throw new ClientModeError('INVALID_MESSAGE', 'Kimi is not implemented.')
-    if (current.acp?.backends.some(item => item.id === value.id)) throw new ClientModeError('INVALID_MESSAGE', 'ACP backend already exists.')
-    const backends = [...(current.acp?.backends ?? []), { id: value.id, command: value.command, args: value.args, enabled: false }]
-    const next = resolveConfig({ ...editableConfig(current), acp: { enabled: current.acp?.enabled ?? true, backends } })
+    if (current.acp?.backends.some(item => item.id === id)) throw new ClientModeError('INVALID_MESSAGE', 'ACP backend already exists.')
+    const enabled = value.enabled === true
+    const backends = [...(current.acp?.backends ?? []), { id, command, args: value.args, enabled }]
+    const next = resolveConfig({ ...editableConfig(current), acp: { enabled: enabled || (current.acp?.enabled ?? true), backends } })
     await this.settings.replace(editableConfig(next))
     await this.host?.setAgentBackends?.(resolveConfig(this.settings.get()))
     return { ...await this.settingsView(), applies: 'live' }
@@ -599,7 +629,7 @@ export class PluginControlRuntime {
     const defaultArgsMap: Record<string, string[]> = {
       codex: ['app-server'],
       cursor: ['acp'],
-      antigravity: ['--input-format', 'stream-json', '--output-format', 'stream-json'],
+      antigravity: ['acp'],
       hermes: ['acp'],
       opencode: ['acp'],
       pi: [],
@@ -692,11 +722,22 @@ export class PluginControlRuntime {
     return this.settingsView()
   }
 
+  private currentEditableConfig(): Config {
+    if (this.settings === undefined) return editableConfig(this.config)
+    try {
+      return editableConfig(resolveConfig(this.settings.get()))
+    } catch {
+      // Keep settings and log views readable even when persisted config caused startup validation to fail.
+      return editableConfig(this.config)
+    }
+  }
+
   private async settingsView(): Promise<PluginSettingsView> {
-    const config = this.settings === undefined ? editableConfig(this.config) : editableConfig(resolveConfig(this.settings.get()))
+    const config = this.currentEditableConfig()
     const associations = await this.associations(config)
     const role = config.role === 'client' ? 'client' : 'host'
     const association = associations[role]
+    const acpDiagnostics = this.host?.acpDiagnostics?.()
     return {
       config,
       deviceName: hostname(),
@@ -704,6 +745,7 @@ export class PluginControlRuntime {
       applies: 'restart',
       associations,
       acpAvailability: Object.fromEntries((config.acp?.backends ?? []).map(item => [item.id, backendCommandAvailable(item.id, item.command ?? '')])),
+      ...(acpDiagnostics === undefined || Object.keys(acpDiagnostics).length === 0 ? {} : { acpDiagnostics }),
       ...(association === undefined ? {} : { association }),
       ...(this.startupFailure === undefined ? {} : {
         startupError: safeStartupError(this.startupFailure),
@@ -782,14 +824,22 @@ function backendCommandAvailable(backend: string, command: string): boolean {
   if (defaultCheckExecutable(trimmed)) return true
   const candidates = backend === 'codex' ? codexBinaryCandidates(trimmed)
     : backend === 'cursor' || backend === 'antigravity' || backend === 'opencode' ? cursorBinaryCandidates(trimmed) : [trimmed]
-  return candidates.some(candidate => defaultCheckExecutable(candidate) || commandAvailable(candidate))
+  return candidates.some(candidate => defaultCheckExecutable(candidate) || (!hasPathSeparator(candidate) && commandAvailable(candidate)))
+}
+
+function hasPathSeparator(command: string): boolean {
+  return command.includes('/') || command.includes('\\')
 }
 
 function commandAvailable(command: string): boolean {
+  if (process.platform === 'win32') {
+    return lookupSystemPath(command, 'win32') !== undefined
+  }
   try {
-    execFileSync(process.platform === 'win32' ? 'where' : 'which', [command], {
+    execFileSync('which', [command], {
       stdio: 'ignore',
       timeout: 5000,
+      windowsHide: true,
     })
     return true
   } catch {
@@ -856,7 +906,10 @@ function fail(error: unknown): ControlResult<unknown> {
     error: {
       code: 'internal',
       message: source?.message ?? 'The plugin control operation failed.',
-      details: remoteCode === undefined ? {} : { remoteCode },
+      details: {
+        ...(remoteCode === undefined ? {} : { remoteCode }),
+        ...(source instanceof AccountTwoFactorRequired ? { challenge: source.challenge, serverUrl: source.serverUrl } : {}),
+      },
     },
   }
 }

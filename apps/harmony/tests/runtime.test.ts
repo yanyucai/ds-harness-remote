@@ -5,7 +5,7 @@ import { controls, secrets, prefs } from './native/state'
 import { resident } from './native/background'
 import { notificationsRecord } from './native/notification'
 import { generateKeyPair } from '@dsh-remote/crypto'
-import type { AndroidRemoteConnection } from '../../android/src/services/connection'
+import type { AndroidRemoteConnection } from '../../../packages/app-core/src/services/connection'
 
 let snapshot: Record<string, any>
 let runtime: HarmonyRuntime
@@ -50,6 +50,10 @@ let mockOpenedLinks: string[] = []
 let lastConnectOptions: any = undefined
 const bridge = {
   connect: vi.fn(async (...args: any[]) => { onFrame = args[4]; lastConnectOptions = args[5] }), close: vi.fn(async () => undefined),
+  openLanWeb: vi.fn(() => undefined),
+  supportsDshWeb: vi.fn(() => false),
+  supportsDshWebTunnel: vi.fn(() => false),
+  rpc: vi.fn(async (_method: string, _params: unknown) => undefined),
   requireProxy: () => proxy,
   configureHistory: vi.fn(async () => undefined),
   checkHealth: vi.fn(async () => true),
@@ -147,6 +151,10 @@ beforeEach(async () => {
   skills = []; commandResult = () => ({ kind: 'success' }); fileTree = () => ({ path: '', entries: [], truncated: false })
   mockTerminals = []; mockTerminalWritten = []; mockTerminalClosed = []; mockTerminalCreated = []; mockTerminalResized = []; mockTerminalStream = undefined
   bridge.connect.mockClear(); bridge.close.mockClear()
+  bridge.openLanWeb.mockReset().mockImplementation(() => undefined)
+  bridge.supportsDshWeb.mockReset().mockReturnValue(false)
+  bridge.supportsDshWebTunnel.mockReset().mockReturnValue(false)
+  bridge.rpc.mockReset().mockResolvedValue(undefined)
   proxy = { workspaceList: async () => ({ items: [] }), sessionList: async () => [] }
   controls.fetch = async request => {
     const path = new URL(request.url).pathname
@@ -358,7 +366,10 @@ describe('Harmony session overview, archiving and message actions', () => {
   })
 
   it('honours the archive filter using the Host-confirmed archive set', async () => {
-    proxy = catalogProxy({ workspaceArchiveSession: vi.fn(async () => ['s2']) })
+    proxy = catalogProxy({
+      workspaceArchiveSession: vi.fn(async () => ['s2']),
+      workspaceUnarchiveSession: vi.fn(async () => []),
+    })
     await connected(proxy)
     await runtime.perform('archive', JSON.stringify({ id: 's2' }))
     expect(proxy.workspaceArchiveSession).toHaveBeenCalledWith('s2')
@@ -370,6 +381,10 @@ describe('Harmony session overview, archiving and message actions', () => {
     expect(archived.map((row: any) => row.id)).toEqual(['s2'])
     expect(archived[0].description).toBe('已归档')
     await runtime.perform('archiveFilter', JSON.stringify({ mode: 'all' }))
+    expect(snapshot.overview.filter((row: any) => row.kind === 'session').map((row: any) => row.id)).toEqual(['s1', 's2'])
+    await runtime.perform('unarchive', JSON.stringify({ id: 's2' }))
+    expect(proxy.workspaceUnarchiveSession).toHaveBeenCalledWith('s2')
+    expect(snapshot.archivedCount).toBe(0)
     expect(snapshot.overview.filter((row: any) => row.kind === 'session').map((row: any) => row.id)).toEqual(['s1', 's2'])
   })
 
@@ -405,10 +420,28 @@ describe('Harmony session overview, archiving and message actions', () => {
     await connected(proxy)
     await runtime.perform('session', JSON.stringify({ id: 's1' }))
     expect(snapshot.view).toBe('chat')
+    expect(snapshot.currentSessionId).toBe('s1')
+    expect(snapshot.canArchiveSession).toBe(true)
+    expect(snapshot.sessionArchived).toBe(false)
     await runtime.perform('archive', JSON.stringify({ id: 's1' }))
     expect(snapshot.view).toBe('workspaces')
     expect(snapshot.sessionKey).toBe('')
     expect(snapshot.rows).toHaveLength(0)
+  })
+
+  it('does not offer archive for subagent conversations', async () => {
+    proxy = catalogProxy({
+      sessionList: async () => [
+        { ...sessionRow('child', 2000), origin: 'subagent' as const, parentSessionId: 's1' },
+      ],
+    })
+    await connected(proxy)
+    await runtime.perform('session', JSON.stringify({ id: 'child' }))
+    expect(snapshot.view).toBe('chat')
+    expect(snapshot.canArchiveSession).toBe(false)
+    expect(await runtime.perform('archive', JSON.stringify({ id: 'child' }))).toBe(false)
+    expect(snapshot.error).toContain('子任务会话不能归档')
+    expect(proxy.workspaceArchiveSession).toBeUndefined()
   })
 
   it('exposes trajectory metadata on every row so the trace view needs no new endpoint', async () => {
@@ -1104,7 +1137,7 @@ describe('Harmony host plugin manager and automation tasks', () => {
     await runtime.perform('plugins', '{}')
     expect(snapshot.settingsWritable).toBe(true)
     expect(snapshot.plugins.map((row: any) => `${row.level}/${row.id}`)).toEqual([
-      'section/section:remote', 'bundle/deepseek-harness-intelligent-ui',
+      'section/section:remote', 'bundle/ds-bot', 'bundle/deepseek-harness-intelligent-ui',
       'section/section:installed', 'bundle/dsh-plugin-alpha', 'component/row:e1',
       'section/section:experimental', 'bundle/dsh-plugin-beta',
     ])
@@ -1206,6 +1239,30 @@ describe('Harmony host plugin manager and automation tasks', () => {
 })
 
 describe('Harmony CodeX pagination and preference persistence', () => {
+  it('archives a CodeX thread through the native thread/archive request', async () => {
+    codexClient = {
+      request: vi.fn(async (method: string) => {
+        if (method === 'project/list') return { data: [] }
+        if (method === 'thread/list') {
+          return {
+            data: [{ id: 'archive-me', title: '待归档', cwd: '/workspace/codex', createdAt: 1000, updatedAt: 2000 }],
+          }
+        }
+        if (method === 'thread/archive') return {}
+        return {}
+      }),
+    }
+    proxy = { workspaceList: async () => ({ items: [] }), sessionList: async () => [] }
+    await login()
+    await runtime.perform('connect', JSON.stringify({ id: hostId }))
+    await runtime.perform('trustHost', JSON.stringify({ id: hostId }))
+    await runtime.perform('backend', JSON.stringify({ backend: 'codex' }))
+    expect(snapshot.sessions.some((row: any) => row.id === 'codex:archive-me')).toBe(true)
+    await runtime.perform('archive', JSON.stringify({ id: 'codex:archive-me' }))
+    expect(codexClient.request).toHaveBeenCalledWith('thread/archive', { threadId: 'archive-me' })
+    expect(snapshot.sessions.some((row: any) => row.id === 'codex:archive-me')).toBe(false)
+  })
+
   it('submits default CodeX permissions at creation and preserves them on send', async () => {
     const thread = (id: string) => ({ id, cwd: '/workspace/codex', title: 'CodeX', status: 'idle', createdAt: 1000, updatedAt: 2000, turns: [] })
     codexClient = {
@@ -1658,7 +1715,7 @@ describe('Harmony Intelligent UI artifact projection and action guard', () => {
     expect(proxy.sessionPrompt).not.toHaveBeenCalled()
     // Submit uiAction
     await runtime.perform('uiAction', JSON.stringify({ text: 'Increment', id: toolRow.uiArtifacts[0].uiId, name: '1', mode: snapshot.sessionKey }))
-    expect(proxy.sessionPrompt).toHaveBeenCalledWith('session-ui-1', 'Increment', undefined, [])
+    expect(proxy.sessionPrompt).toHaveBeenCalledWith('session-ui-1', 'Increment', undefined, [], [], 'queue')
   })
 
   it('projects ui_patch updating artifact version and title', async () => {
@@ -2010,6 +2067,110 @@ describe('Harmony Intelligent UI artifact projection and action guard', () => {
       expect(sec).toBeDefined()
       expect(sec.rows.find((r: any) => r.label === '传输策略').value).toContain('自动优选')
       expect(sec.rows.find((r: any) => r.label === '探测顺序').value).toBe('LAN → P2P → TURN → Relay')
+    })
+  })
+
+  describe('Harmony 0.6.7 account, send-mode and DSH Web alignment', () => {
+    it('keeps the two-factor challenge out of normal errors and completes device registration', async () => {
+      const challenge = 'C'.repeat(43)
+      let verifiedBody: any
+      controls.fetch = async request => {
+        const path = new URL(request.url).pathname
+        if (path === '/api/v1/auth/login') {
+          return Response.json({ twoFactorRequired: true, challenge })
+        }
+        if (path === '/api/v1/auth/2fa/verify') {
+          verifiedBody = JSON.parse(request.content ?? '{}')
+          return Response.json({
+            token: 'account-token-valid-1234567890', account: 'factor@example.com',
+            isAdmin: false, expiresAt: Date.now() + 60000,
+          })
+        }
+        if (path === '/api/v1/devices/register') {
+          return Response.json({
+            accessToken: '{{SECRET_f2access}}', refreshToken: '{{SECRET_f2refresh}}',
+            accessTokenExpiresAt: Date.now() + 600000, refreshTokenExpiresAt: Date.now() + 6000000,
+          })
+        }
+        if (path === '/api/v1/devices') return Response.json({ items: [] })
+        if (path === '/api/v1/devices/self/membership') return Response.json({ status: 'none', expiresAt: null })
+        return Response.json({})
+      }
+
+      await runtime.perform('login', JSON.stringify({
+        server: 'https://factor.example', email: 'factor@example.com', password: '{{SECRET_f2password}}',
+      }))
+      expect(snapshot.view).toBe('login')
+      expect(snapshot.twoFactorRequired).toBe(true)
+      expect(snapshot.error).toBe('')
+
+      await runtime.perform('verifyTwoFactor', JSON.stringify({ code: ' 123456 ' }))
+      expect(verifiedBody).toEqual({ challenge, code: '123456' })
+      expect(snapshot.twoFactorRequired).toBe(false)
+      expect(snapshot.view).toBe('devices')
+      expect(snapshot.account).toBe('factor@example.com')
+    })
+
+    it('loads account membership status and expiration independently of host connectivity', async () => {
+      const original = controls.fetch!
+      controls.fetch = async request => {
+        if (new URL(request.url).pathname === '/api/v1/devices/self/membership') {
+          return Response.json({ status: 'active', expiresAt: Date.UTC(2028, 0, 2) })
+        }
+        return original(request)
+      }
+      await login()
+      await runtime.perform('membership', '{}')
+      expect(snapshot.membershipStatus).toBe('active')
+      expect(snapshot.membershipExpiresAt).toBe('2028/01/02')
+    })
+
+    it('sends Harness prompts with queue by default and steer after the preference changes', async () => {
+      const sessionPrompt = vi.fn(async () => undefined)
+      proxy = {
+        workspaceList: async () => ({ items: [{ workspaceId: 'w-send', title: 'Send', path: '/send', sessionIds: ['s-send'] }] }),
+        sessionList: async () => [{ sessionId: 's-send', title: 'Running', running: true, updatedAt: 0, backend: 'harness' }],
+        sessionHistory: async () => ({ events: [], hasMore: false }),
+        sessionModels: async () => ({ current: { provider: 'provider', model: 'model' }, groups: [], routable: true }),
+        messageFeedbackList: async () => [],
+        sessionPrompt,
+      }
+      await login()
+      await runtime.perform('connect', JSON.stringify({ id: hostId }))
+      await runtime.perform('trustHost', JSON.stringify({ id: hostId }))
+      await runtime.perform('workspace', JSON.stringify({ id: 'w-send' }))
+      await runtime.perform('session', JSON.stringify({ id: 's-send' }))
+
+      await runtime.perform('prompt', JSON.stringify({ text: 'queued' }))
+      expect(sessionPrompt.mock.calls.at(-1)?.[5]).toBe('queue')
+      await runtime.perform('setBusySendMode', JSON.stringify({ mode: 'steer' }))
+      expect(snapshot.busySendMode).toBe('steer')
+      await runtime.perform('prompt', JSON.stringify({ text: 'steered' }))
+      expect(sessionPrompt.mock.calls.at(-1)?.[5]).toBe('steer')
+    })
+
+    it('opens and closes a tunnel DSH Web grant without exposing a reusable native bridge', async () => {
+      const grant = {
+        url: 'https://dsh-web.tunnel.example/',
+        browserGrant: 'D'.repeat(43),
+        expiresAt: Date.now() + 30000,
+      }
+      bridge.supportsDshWeb.mockReturnValue(true)
+      bridge.supportsDshWebTunnel.mockReturnValue(true)
+      bridge.rpc.mockImplementation(async (method: string) =>
+        method === 'dsh.web.open' ? grant : undefined)
+      await login()
+      await runtime.perform('connect', JSON.stringify({ id: hostId }))
+      await runtime.perform('trustHost', JSON.stringify({ id: hostId }))
+
+      await runtime.perform('openDshWeb', '{}')
+      expect(snapshot.dshWebAvailable).toBe(true)
+      expect(snapshot.dshWebUrl).toBe(grant.url)
+      expect(snapshot.dshWebGrant).toBe(grant.browserGrant)
+      expect(snapshot.dshWebLan).toBe(false)
+      await runtime.perform('closeDshWeb', '{}')
+      expect(bridge.rpc).toHaveBeenCalledWith('dsh.web.close', {}, expect.any(AbortSignal))
+      expect(snapshot.dshWebUrl).toBe('')
     })
   })
 })

@@ -4,6 +4,12 @@ import type { CodexPermissionPreset } from '@dsh-remote/protocol'
 import type { HarnessSessionGeneration } from '../harness-version.js'
 import { CodexSessionHistoryCache } from '../session-history-cache.js'
 import type { RemoteTypertGatewayTarget, TypertGatewayRequest, TypertRpcResult } from '../typert-gateway-contract.js'
+import {
+  normalizeVirtualHistoryTurnWindow,
+  VIRTUAL_HISTORY_MAX_MESSAGES,
+  VirtualHistoryResponseTooLargeError,
+  type VirtualHistoryTurnWindow,
+} from '../virtual-history-pagination.js'
 import { codexPermissionPresetFromResponse } from './permissions.js'
 import type {
   CatalogState,
@@ -54,6 +60,7 @@ import { CodexEventCarrier } from './virtual-event-carrier.js'
 import type { CodexNativeHistory, CodexNativeHistoryPage } from './virtual-history.js'
 import {
   adaptCodexHistoryPage,
+  enforceCodexHistoryPageBudget,
   isCodexNativeHistoryPage,
   paginateCodexNativeHistory,
   projectCodexNativeHistory,
@@ -223,6 +230,25 @@ export class CodexVirtualHarness implements RemoteTypertGatewayTarget {
       undefined)?.id
   }
 
+  private readonly desktopFileReceipts = new Map<string, { sessionId: string; part: JsonRecord }>()
+
+  async assertDesktopUploadSession(sessionId: string, signal: AbortSignal): Promise<void> {
+    const workspace = this.selectedWorkspace(await this.currentCatalog(signal))
+    if (!workspace?.sessionIds.includes(sessionId)) throw new Error('The selected CodeX session is no longer in this workspace.')
+  }
+
+  registerDesktopUpload(sessionId: string, receiptId: string, part: JsonRecord): void {
+    if (part.type === 'image' && typeof part.data === 'string') {
+      let pending = part.data.length
+      for (const receipt of this.desktopFileReceipts.values()) {
+        if (typeof receipt.part.data === 'string') pending += receipt.part.data.length
+      }
+      if (pending > Math.ceil(100 * 1024 * 1024 / 3) * 4) throw new Error('Too many pending CodeX images.')
+    }
+    this.desktopFileReceipts.set(receiptId, { sessionId, part })
+    if (this.desktopFileReceipts.size > 64) this.desktopFileReceipts.delete(this.desktopFileReceipts.keys().next().value!)
+  }
+
   async invoke(request: TypertGatewayRequest): Promise<unknown> {
     const result = await this.dispatch(
       `${request.namespace}/${request.method}`,
@@ -353,6 +379,7 @@ export class CodexVirtualHarness implements RemoteTypertGatewayTarget {
     this.selectedModels.clear()
     this.selectedPermissions.clear()
     this.imageAttachments.clear()
+    this.desktopFileReceipts.clear()
   }
 
   private async refreshCatalog(signal?: AbortSignal, force = false): Promise<CatalogState> {
@@ -722,9 +749,18 @@ export class CodexVirtualHarness implements RemoteTypertGatewayTarget {
 
   private async prompt(request: JsonRecord, signal: AbortSignal): Promise<unknown> {
     const sessionId = requiredString(request.sessionId, 'sessionId')
-    const content = array(request.content)
+    const receipts = new Set<string>()
+    const content = array(request.content).map(part => {
+      const block = record(part)
+      const receiptId = block.type === 'file' ? string(block.receiptId) : undefined
+      if (receiptId === undefined) return part
+      const receipt = this.desktopFileReceipts.get(receiptId)
+      if (receipt?.sessionId !== sessionId || receipts.has(receiptId)) return part
+      receipts.add(receiptId)
+      return receipt.part
+    })
     const input = codexPromptInput(content)
-    if (input === undefined) return failure('attachment-error', 'CodeX virtual Sessions accept text and pasted PNG, JPEG, WebP, or GIF images only.')
+    if (input === undefined) return failure('attachment-error', 'CodeX requires supported images or a current upload receipt from this session.')
     const threadId = nativeThreadId(sessionId)
     // Session follow/history normally hydrates this selection before the
     // composer can send. Reuse that state (and the selection captured by
@@ -753,11 +789,16 @@ export class CodexVirtualHarness implements RemoteTypertGatewayTarget {
     }
     this.pendingRequestIds.set(sessionId, string(request.requestId) ?? '')
     const mode = request.mode === 'steer' ? 'turn/steer' : 'turn/start'
+    if ([...receipts].some(id => !this.desktopFileReceipts.has(id))) {
+      return failure('attachment-error', 'A CodeX upload was already submitted. Select the attachment again.')
+    }
     if (mode === 'turn/steer') {
       const active = this.activeTurnId(threadId)
       if (active === undefined) return failure('steer-unavailable', 'The CodeX Thread has no active turn to steer.')
+      for (const receiptId of receipts) this.desktopFileReceipts.delete(receiptId)
       await this.client.request(mode, { threadId, expectedTurnId: active, input }, signal)
     } else {
+      for (const receiptId of receipts) this.desktopFileReceipts.delete(receiptId)
       await this.client.request(mode, {
         threadId,
         input,
@@ -795,7 +836,8 @@ export class CodexVirtualHarness implements RemoteTypertGatewayTarget {
     const result = record(await this.client.request('thread/read', { threadId, includeTurns: true }, signal))
     const thread = record(result.thread)
     if (string(thread.id) !== threadId) throw new Error('CodeX returned an invalid Thread history.')
-    this.cacheHistoryImages(projectCodexNativeHistory(thread, sessionId))
+    this.cacheHistoryImages(projectCodexNativeHistory(thread, sessionId, 'legacy',
+      images => this.live.cacheImageBlocks(sessionId, images)))
   }
 
   private async cancel(request: JsonRecord, signal: AbortSignal): Promise<unknown> {
@@ -837,12 +879,20 @@ export class CodexVirtualHarness implements RemoteTypertGatewayTarget {
 
   private async sessionPage(request: JsonRecord, signal: AbortSignal): Promise<unknown> {
     const sessionId = sessionIdFromAddress(record(request.address))
-    const page = await this.readHistoryPage(nativeThreadId(sessionId), {
-      beforeSeq: optionalNonNegativeInteger(request.beforeSeq),
-      throughSeq: optionalInteger(request.throughSeq),
-      maxMessages: optionalPositiveInteger(request.maxMessages),
-    }, signal)
-    return success({ records: page.records, hasMore: page.hasMore, cursor: page.cursor })
+    try {
+      const page = await this.readHistoryPage(nativeThreadId(sessionId), {
+        beforeSeq: optionalNonNegativeInteger(request.beforeSeq),
+        throughSeq: optionalInteger(request.throughSeq),
+        maxMessages: optionalPositiveInteger(request.limit) ?? optionalPositiveInteger(request.maxMessages),
+        turnWindow: normalizeVirtualHistoryTurnWindow(request.turnWindow),
+      }, signal)
+      return success({ records: page.records, hasMore: page.hasMore, cursor: page.cursor })
+    } catch (error) {
+      if (error instanceof VirtualHistoryResponseTooLargeError) {
+        return failure('response-too-large', error.message, { actualBytes: error.actualBytes, maxBytes: error.maxBytes })
+      }
+      throw error
+    }
   }
 
   private activeTurnId(threadId: string): string | undefined {
@@ -852,12 +902,15 @@ export class CodexVirtualHarness implements RemoteTypertGatewayTarget {
 
   private async readHistoryPage(
     threadId: string,
-    page: { beforeSeq?: number; throughSeq?: number; maxMessages?: number },
+    page: { beforeSeq?: number; throughSeq?: number; maxMessages?: number; turnWindow?: VirtualHistoryTurnWindow },
     signal?: AbortSignal,
   ): Promise<CodexNativeHistoryPage> {
+    const turnWindow = normalizeVirtualHistoryTurnWindow(page.turnWindow)
     const boundedPage = {
-      ...page,
+      beforeSeq: page.beforeSeq,
+      throughSeq: page.throughSeq,
       maxMessages: boundedCodexHistoryPageSize(page.maxMessages),
+      ...(turnWindow === undefined ? {} : { turnWindow }),
     }
     const knownUpdatedAt = this.catalog?.sessions.find(item => item.id === `codex:${threadId}`)?.updatedAt
     if (!this.blankThreads.has(threadId)) {
@@ -876,15 +929,34 @@ export class CodexVirtualHarness implements RemoteTypertGatewayTarget {
         const readEpoch = this.historyCache.beginReadEpoch()
         let value: unknown
         try {
-          value = record(await this.client.request('dsh/sessionHistory', {
+          const requestParams = {
             threadId,
             ...(boundedPage.beforeSeq === undefined ? {} : { beforeSeq: boundedPage.beforeSeq }),
             ...(boundedPage.throughSeq === undefined ? {} : { throughSeq: boundedPage.throughSeq }),
             ...(boundedPage.maxMessages === undefined ? {} : { maxMessages: boundedPage.maxMessages }),
-          }, sharedSignal))
+          }
+          try {
+            value = record(await this.client.request('dsh/sessionHistory', {
+              ...requestParams,
+              ...(boundedPage.turnWindow === undefined ? {} : { turnWindow: boundedPage.turnWindow }),
+            }, sharedSignal))
+          } catch (turnWindowError) {
+            if (
+              boundedPage.turnWindow !== undefined
+              && turnWindowError instanceof Error
+              && errorCode(turnWindowError) === 'INVALID_MESSAGE'
+            ) {
+              value = record(await this.client.request('dsh/sessionHistory', {
+                ...requestParams,
+                maxMessages: boundedPage.maxMessages ?? VIRTUAL_HISTORY_MAX_MESSAGES,
+              }, sharedSignal))
+            } else {
+              throw turnWindowError
+            }
+          }
         } catch (error) {
           if (!isLegacySessionHistoryUnsupported(error)) {
-            if (!sharedSignal.aborted) {
+            if (!sharedSignal.aborted && !(error instanceof Error && errorCode(error) === 'RESPONSE_TOO_LARGE')) {
               const stale = this.historyCache.getStalePage(threadId, this.sessionGeneration, boundedPage)
               if (stale !== undefined) return stale
             }
@@ -916,6 +988,7 @@ export class CodexVirtualHarness implements RemoteTypertGatewayTarget {
               beforeSeq: page.beforeSeq,
               throughSeq: page.throughSeq,
               maxMessages: boundedPage.maxMessages,
+              turnWindow: boundedPage.turnWindow,
             },
           )
         }
@@ -923,10 +996,14 @@ export class CodexVirtualHarness implements RemoteTypertGatewayTarget {
         if (!isCodexNativeHistoryPage(value, `codex:${threadId}`)) {
           throw new Error('CodeX Remote returned an invalid paginated History.')
         }
+        const bounded = enforceCodexHistoryPageBudget(value, {
+          maxMessages: boundedPage.maxMessages,
+          turnWindow: boundedPage.turnWindow,
+        })
         if (!this.blankThreads.has(threadId)) {
-          this.historyCache.setPage(threadId, this.sessionGeneration, boundedPage, value, knownUpdatedAt, readEpoch)
+          this.historyCache.setPage(threadId, this.sessionGeneration, boundedPage, bounded, knownUpdatedAt, readEpoch)
         }
-        return value
+        return bounded
       },
     )
     this.applyHistoryMetadata(threadId, resolved)
@@ -958,10 +1035,20 @@ export class CodexVirtualHarness implements RemoteTypertGatewayTarget {
   private async sessionHistory(request: JsonRecord, signal: AbortSignal): Promise<unknown> {
     const sessionId = requiredString(request.sessionId, 'sessionId')
     const beforeSeq = optionalNonNegativeInteger(request.beforeSeq)
-    const history = await this.readHistoryPage(nativeThreadId(sessionId), {
-      beforeSeq,
-      maxMessages: optionalPositiveInteger(request.maxMessages),
-    }, signal)
+    let history: CodexNativeHistoryPage
+    try {
+      history = await this.readHistoryPage(nativeThreadId(sessionId), {
+        beforeSeq,
+        throughSeq: optionalInteger(request.throughSeq),
+        maxMessages: optionalPositiveInteger(request.maxMessages) ?? optionalPositiveInteger(request.limit),
+        turnWindow: normalizeVirtualHistoryTurnWindow(request.turnWindow),
+      }, signal)
+    } catch (error) {
+      if (error instanceof VirtualHistoryResponseTooLargeError) {
+        return failure('response-too-large', error.message, { actualBytes: error.actualBytes, maxBytes: error.maxBytes })
+      }
+      throw error
+    }
     const directory = await this.models(signal).catch(() => undefined)
     if (beforeSeq === undefined) {
       signal.throwIfAborted()

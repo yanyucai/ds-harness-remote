@@ -3,7 +3,7 @@ import { controls, requests, secrets } from './native/state'
 import { installPlatform, NativeWebSocket, vaultRead, vaultWrite, vaultDelete } from '../core/platform'
 import { clock } from './native/time'
 import { ControlLease } from '../../../packages/webrtc/src/control-lease'
-import { RemoteServerApi } from '../../android/src/services/api'
+import { RemoteServerApi } from '../../../packages/app-core/src/services/api'
 
 beforeAll(() => {
   Object.defineProperty(globalThis, 'crypto', { value: globalThis.crypto, writable: true, configurable: true })

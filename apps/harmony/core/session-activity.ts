@@ -1,4 +1,4 @@
-import type { SessionTools, BackgroundJob } from '../../android/src/services/session-tools'
+import type { SessionTools, BackgroundJob } from '../../../packages/app-core/src/services/session-tools'
 import type { RemoteGatewayStream } from '@dsh-remote/client-core'
 const record = (value: unknown): value is Record<string, unknown> => !!value && typeof value === 'object' && !Array.isArray(value)
 

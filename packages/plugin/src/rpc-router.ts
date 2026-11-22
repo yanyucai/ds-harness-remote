@@ -1,11 +1,17 @@
+import type { DshWebLanPeer } from './dsh-web-lan.js'
+import { DSH_WEB_CAPABILITY, DSH_WEB_LAN_CAPABILITY, DSH_WEB_LAN_IPV6_CAPABILITY } from '@dsh-remote/protocol'
+import type { DshWebPeer } from './dsh-web-host.js'
 import type { LanUploadHost } from './lan-upload.js'
+import { TRANSPORT_UPGRADE_CAPABILITY, type TransportUpgradeHost } from './transport-upgrade.js'
 import {
   BINARY_UPLOAD_CAPABILITY,
   LAN_UPLOAD_CAPABILITY,
   createRpcError,
   createRpcResponse,
   parseRemoteWorkspaceTypes,
+  sameLinkIpv6PairSchema,
   REMOTE_COMPACTION_CAPABILITY,
+  sessionTransferMethods,
   type RemoteMessage,
   type RemoteWorkspaceTypeDescription,
   type RpcErrorPayload,
@@ -16,12 +22,15 @@ import type { LoopbackHost } from './loopback-host.js'
 import type { RemoteFileViewerBridge } from './file-viewer-bridge.js'
 import type { HarnessRemoteBridge } from './harness-remote-bridge.js'
 import type { SafeLogger } from './logging.js'
+import type { AuthenticatedPeerChannel } from './types.js'
 import type { CodexPeerBridge } from './codex/peer-bridge.js'
 import type { AcpPeerBridge } from './acp/peer-bridge.js'
 import { RpcError, safeErrorCode, workspaceFileFailureReason } from './safe-error.js'
 import type { WorkspaceUploadHost } from './workspace-upload.js'
 import type { PluginRouteBridge } from './plugin-route-bridge.js'
 import type { RemoteCompactionOperations, RemoteCompactionOwner } from './remote-compaction-operations.js'
+
+import type { SessionTransferPeer } from './session-transfer.js'
 
 export { RpcError } from './safe-error.js'
 
@@ -39,7 +48,12 @@ const compactionOperationSchema = z.object({
   operationId: z.string().uuid(),
 }).strict()
 const apiMethods = new Set([
+  ...sessionTransferMethods,
   'harness.transport.describe',
+  'dsh.web.open',
+  'dsh.web.close',
+  'dsh.web.lan.direct.open',
+  'dsh.web.lan.direct.close',
   'remote.history.configure',
   'harness.remote.call',
   'harness.remote.transfer.open',
@@ -79,6 +93,11 @@ const apiMethods = new Set([
   'workspace.upload.chunk.binary',
   'workspace.upload.commit',
   'workspace.upload.abort',
+  'remote.transport.upgrade.offer',
+  'remote.transport.upgrade.ice',
+  'remote.transport.upgrade.activate',
+  'remote.transport.upgrade.drain',
+  'remote.transport.upgrade.abort',
 ])
 
 export const HOST_CAPABILITIES = [
@@ -115,16 +134,25 @@ export class RpcRouter {
     private readonly workspaceUpload?: WorkspaceUploadHost,
     private readonly compaction?: RemoteCompactionRoute,
     private readonly lanUpload?: LanUploadHost,
+    private readonly transportUpgrade?: TransportUpgradeHost,
+    private readonly sessionTransfer?: SessionTransferPeer,
+    private readonly dshWeb?: DshWebPeer,
+    private readonly lanWeb?: DshWebLanPeer,
+    private readonly sameLinkIpv6Endpoints?: AuthenticatedPeerChannel['sameLinkIpv6Endpoints'],
   ) {}
 
   async closePeerStreams(): Promise<void> {
+    this.lanWeb?.dispose()
     this.loopback?.closeAll()
+    this.sessionTransfer?.close()
     await Promise.all([
       this.harnessRemote?.closeAll(),
       this.codex?.closeAll(),
       this.acp?.closeAll(),
       this.workspaceUpload?.closeAll(),
       this.lanUpload?.closeAll(),
+      this.transportUpgrade?.closeAll(),
+      this.dshWeb?.dispose(),
     ])
   }
 
@@ -145,7 +173,7 @@ export class RpcRouter {
     const startedAt = performance.now()
     try {
       const result = await this.invoke(request.payload.method, request.payload.params)
-      const subMethod = typeof (request.payload.params as Record<string, unknown> | undefined)?.method === 'string'
+      const subMethod = !request.payload.method.startsWith('session.transfer.') && typeof (request.payload.params as Record<string, unknown> | undefined)?.method === 'string'
         ? String((request.payload.params as Record<string, unknown>).method)
         : undefined
       this.logger?.info('host rpc ok', {
@@ -157,6 +185,7 @@ export class RpcRouter {
     } catch (error: unknown) {
       const response = errorResponse(request.id, error)
       const failedEndpoint = !request.payload.method.startsWith('workspace.upload.')
+        && !request.payload.method.startsWith('session.transfer.')
         && typeof (request.payload.params as Record<string, unknown> | undefined)?.endpoint === 'string'
         ? String((request.payload.params as Record<string, unknown>).endpoint)
         : undefined
@@ -177,14 +206,32 @@ export class RpcRouter {
 
   private async invoke(method: string, params: unknown): Promise<unknown> {
     switch (method) {
-      case 'harness.transport.describe': {
+      case 'dsh.web.lan.direct.open':
+      case 'dsh.web.lan.direct.close':
+        if (!this.lanWeb) throw new RpcError('FEATURE_NOT_SUPPORTED', 'LAN Web is unavailable.')
+        if (method === 'dsh.web.lan.direct.open') return this.lanWeb.open(params)
+        return this.lanWeb.close(params)
+      case 'dsh.web.open':
         emptyParamsSchema.parse(params)
+        if (!this.dshWeb) throw new RpcError('FEATURE_NOT_SUPPORTED', 'DSH Web is unavailable.')
+        return this.dshWeb.open()
+      case 'dsh.web.close':
+        emptyParamsSchema.parse(params)
+        await this.dshWeb?.close()
+        return { closed: true }
+      case 'harness.transport.describe': {
+        const { sameLinkIpv6Pair } = z.object({ sameLinkIpv6Pair: sameLinkIpv6PairSchema.optional() }).strict().parse(params)
         const hostCapabilities = (await this.capabilities()).filter(capability => capability !== BINARY_UPLOAD_CAPABILITY && capability !== LAN_UPLOAD_CAPABILITY)
         const remoteAvailable = hostCapabilities.includes('harness.remote.v1') || hostCapabilities.includes('harness.remote.v3')
         const capabilities = [...new Set([...hostCapabilities, 'remote.history.compact.v1',
           ...(this.harnessRemote === undefined || !remoteAvailable ? [] : ['harness.remote.stream.transfer.v1']),
           ...(this.compaction === undefined ? [] : [REMOTE_COMPACTION_CAPABILITY]),
           ...(this.workspaceUpload === undefined || !hostCapabilities.includes('workspace.upload.v1') ? [] : [BINARY_UPLOAD_CAPABILITY, ...(this.lanUpload ? [LAN_UPLOAD_CAPABILITY] : [])]),
+          ...(this.sessionTransfer?.capabilities() ?? []),
+          ...(this.lanWeb?.available() ? [DSH_WEB_LAN_CAPABILITY] : []),
+          ...(this.lanWeb?.available() && this.sameLinkIpv6Endpoints && process.platform === 'linux' ? [DSH_WEB_LAN_IPV6_CAPABILITY] : []),
+          ...(this.dshWeb?.available() ? [DSH_WEB_CAPABILITY] : []),
+          ...(this.transportUpgrade === undefined ? [] : [TRANSPORT_UPGRADE_CAPABILITY]),
         ])]
         let workspaceTypes: RemoteWorkspaceTypeDescription[] | undefined
         if (this.workspaceTypes !== undefined) {
@@ -194,8 +241,13 @@ export class RpcRouter {
             workspaceTypes = []
           }
         }
+        const sameLinkIpv6Endpoints = await this.sameLinkIpv6Endpoints?.(sameLinkIpv6Pair) ?? []
+        if (sameLinkIpv6Endpoints.length > 0) this.logger?.info('nominated IPv6 WebRTC endpoints verified on-link', { mode: 'LAN' })
         return {
           capabilities,
+          ...(this.sameLinkIpv6Endpoints ? { sameLinkIpv6PairProbe: true } : {}),
+          ...(sameLinkIpv6Endpoints.length > 0 ? { sameLinkIpv6Endpoints } : {}),
+          ...(capabilities.includes(DSH_WEB_LAN_CAPABILITY) ? { dshWebLanReady: await this.lanWeb?.onLan() === true } : {}),
           ...(workspaceTypes === undefined ? {} : { workspaceTypes }),
         }
       }
@@ -267,7 +319,17 @@ export class RpcRouter {
         return this.workspaceUpload.call(method, params)
       }
       case 'plugin.route.call': return this.requirePluginRoute().call(params)
-      default: throw new RpcError('METHOD_NOT_FOUND', 'The requested method does not exist.')
+      case 'remote.transport.upgrade.offer': return this.requireTransportUpgrade().offer(params)
+      case 'remote.transport.upgrade.ice': return this.requireTransportUpgrade().addIce(params)
+      case 'remote.transport.upgrade.activate': return this.requireTransportUpgrade().activate(params)
+      case 'remote.transport.upgrade.drain': return this.requireTransportUpgrade().drain(params)
+      case 'remote.transport.upgrade.abort': return this.requireTransportUpgrade().abort(params)
+      default:
+        if (method.startsWith('session.transfer.')) {
+          if (!this.sessionTransfer) throw new RpcError('FEATURE_NOT_SUPPORTED', 'Session transfer is unavailable on this Host.')
+          return this.sessionTransfer.call(method, params)
+        }
+        throw new RpcError('METHOD_NOT_FOUND', 'The requested method does not exist.')
     }
   }
 
@@ -304,6 +366,13 @@ export class RpcRouter {
       throw new RpcError('FEATURE_NOT_SUPPORTED', 'This Host cannot forward local plugin routes.')
     }
     return this.pluginRoute
+  }
+
+  private requireTransportUpgrade(): TransportUpgradeHost {
+    if (this.transportUpgrade === undefined) {
+      throw new RpcError('CAPABILITY_NOT_SUPPORTED', 'In-band transport upgrade is unavailable on this Host.')
+    }
+    return this.transportUpgrade
   }
 }
 

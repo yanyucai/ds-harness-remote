@@ -1,6 +1,6 @@
 import { nativeLabels } from './native-labels'
 import { alignmentLabels } from './alignment-labels'
-import { getActiveLanguage, messageCatalogs } from '../../android/src/locales/i18n'
+import { getActiveLanguage, messageCatalogs } from '../../../packages/app-core/src/locales/i18n'
 const paths = new Map<string,string[]>()
 function index(value: unknown,path: string[]=[]):void {
   if(typeof value==='string'){if(!paths.has(value))paths.set(value,path);return}

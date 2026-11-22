@@ -5,14 +5,14 @@ import { join } from 'node:path'
 import { once } from 'node:events'
 import { WebSocket } from 'ws'
 import { createRemoteServer } from '../../server/src/server'
-import { RemoteServerApi } from '../../android/src/services/api'
-import { SecureTransport } from '../../android/src/services/secure-transport'
+import { RemoteServerApi } from '../../../packages/app-core/src/services/api'
+import { SecureTransport } from '../../../packages/app-core/src/services/secure-transport'
 import { AdaptiveTransport } from '@dsh-remote/webrtc'
 import { RemoteClientCore } from '@dsh-remote/client-core'
 import { generateKeyPair, NoiseIkSession, createNoisePrologue, toBase64Url, fromBase64Url } from '@dsh-remote/crypto'
 import { createControlFrame, SecureMessageCodec, decodeMessage, encodeMessage, createRpcResponse } from '@dsh-remote/protocol'
 import { installPlatform } from '../core/platform'
-import type { DeviceIdentity, RemoteDevice } from '../../android/src/types'
+import type { DeviceIdentity, RemoteDevice } from '../../../packages/app-core/src/types'
 
 // Only OS bindings are substituted. HTTP/WSS routing, membership, Noise IK,
 // counters, framing, and the RPC codec below are the actual pinned upstream code.

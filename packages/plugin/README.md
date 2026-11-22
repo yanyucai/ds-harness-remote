@@ -20,9 +20,11 @@ For native Harness workspaces (`backend: "harness"`), the same Agent can use:
 
 | Tool | Purpose |
 | --- | --- |
+| `remote_list_presets` | List available agent presets on the Remote Host (`hostId`, `backend`, optional `workspaceId`). |
 | `remote_list_sessions` | List root sessions in an existing workspace; live catalog pagination. |
-| `remote_read_session` | Read bounded native history, with an older-page cursor and explicit truncation. |
-| `remote_create_session` | Create an empty session in the selected workspace. |
+| `remote_read_session` | Read bounded native history, `agentPreset` (when reported), with an older-page cursor and explicit truncation. |
+| `remote_create_session` | Create an empty session in the selected workspace, optionally composing a `preset` before the first turn. |
+| `remote_select_preset` | Select an agent preset for a blank session before its first turn starts. |
 | `remote_send_message` | Queue a text task or follow-up under existing Host permissions. |
 | `remote_wait_sessions` | Observe up to eight sessions, for up to 60 seconds; zero requests snapshots. |
 | `remote_interrupt_session` | Request interruption of the current execution; does not undo edits or delete queued messages. |
@@ -98,7 +100,7 @@ This repository includes a minimal, single-account self-hosted Relay Server in [
 
 - [Complete guide](https://github.com/liguobao/ds-harness-remote#readme)
 - [Codex Remote technical notes](https://github.com/liguobao/ds-harness-remote/blob/main/docs/codex-remote.md)
-- [Agent workspace integration guide](https://github.com/liguobao/ds-harness-remote/blob/main/docs/acp-integration.md)
+- [Agent workspace integration guide](https://github.com/liguobao/ds-harness-remote/blob/main/docs/acp-remote.md)
 - [End-to-end encryption](https://github.com/liguobao/ds-harness-remote/blob/main/docs/end-to-end-encryption.md)
 - [Network and transport](https://github.com/liguobao/ds-harness-remote/blob/main/docs/network.md)
 - [Protocol reference](https://github.com/liguobao/ds-harness-remote/blob/main/docs/protocol.md)

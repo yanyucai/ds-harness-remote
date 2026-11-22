@@ -161,8 +161,35 @@ describe('HermesAcpClient', () => {
       queueMicrotask(() => child.emit('error', new Error('spawn hermes ENOENT')))
       return child
     })
-    await expect(client.start()).rejects.toMatchObject({ code: 'CURSOR_BINARY_UNAVAILABLE' })
+    // Hermes reuses the Cursor stdio client, but its failures must not be
+    // reported as Cursor ones: a disabled Cursor backend stays silent.
+    await expect(client.start()).rejects.toMatchObject({ code: 'HERMES_BINARY_UNAVAILABLE' })
     expect(client.isReady()).toBe(false)
+  })
+
+  it('suppresses requests during Hermes session/load replay and after load timeout (#466)', async () => {
+    const { client, children } = setup(message => message.method === 'session/load')
+    const inbound = vi.fn()
+    client.onInbound(inbound)
+    try {
+      await client.start()
+      const timedOut = client.call('session/load', { sessionId: 'hermes-replay', cwd: '/work/repo' }, 25).then(
+        result => ({ result, error: undefined }),
+        error => ({ result: undefined, error }),
+      )
+      await vi.waitFor(() => expect(children[0]!.sent.some(m => m.method === 'session/load')).toBe(true))
+      children[0]!.stdout.write(`${JSON.stringify({
+        jsonrpc: '2.0',
+        id: 'hermes-perm-1',
+        method: 'session/request_permission',
+        params: { sessionId: 'hermes-replay', options: [] },
+      })}\n`)
+      expect((await timedOut).error).toMatchObject({ code: 'HERMES_REQUEST_TIMEOUT' })
+      children[0]!.update('hermes-replay', chunk('agent_message_chunk', 'late-hermes-replay'))
+      await tick()
+      expect(inbound).not.toHaveBeenCalled()
+      expect(children[0]!.sent.find(m => m.id === 'hermes-perm-1')?.result).toEqual({ outcome: { outcome: 'cancelled' } })
+    } finally { await client.close() }
   })
 })
 

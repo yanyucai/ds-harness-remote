@@ -1,3 +1,6 @@
+import { parseCodexSessionId } from './codex/session-id.js'
+import { uploadRemoteBuffer } from './remote-file-upload.js'
+import { workspaceUploadMaxBytes } from './workspace-transfer-limits.js'
 import { uploadLocalMentions } from './local-mention-upload.js'
 import type { ControlResult } from './control-result.js'
 import { AgentAcpClient, CodexRemoteClient } from '@dsh-remote/client-core'
@@ -52,7 +55,7 @@ import {
 } from './session-history-cache.js'
 import { safeErrorCode } from './safe-error.js'
 import { RemoteSessionTools, type SessionToolOperation } from './remote-session-tools.js'
-import type { OAuthProvider } from './server-api.js'
+import type { AccountVerification, OAuthProvider } from './server-api.js'
 import { ClientServerApi, ServerApiError } from './server-api.js'
 import type { TypertGatewayLike } from './typert-gateway-contract.js'
 import { TypertGatewaySwitch } from './typert-gateway-switch.js'
@@ -100,7 +103,7 @@ export class ClientModeRuntime {
   private cursorVirtual?: AcpVirtualHarness
   private cursorVirtualSelection?: { targetDeviceId: string; workspaceId: string; backend: string }
   private readonly acpOpenedSessions = new Map<string, string>()
-  private acpVirtualBackend: 'cursor' | 'antigravity' | 'pi' | 'opencode' | 'claude' | 'hermes' = 'cursor'
+  private acpVirtualBackend = 'cursor'
   private readonly remoteHistoryCaches = new Map<string, RemoteSessionHistoryCache>()
   private readonly codexHistoryCaches = new Map<string, CodexSessionHistoryCache>()
   private readonly acpHistoryCaches = new Map<string, AcpSessionHistoryCache>()
@@ -379,16 +382,11 @@ export class ClientModeRuntime {
     throw new ClientModeError(status.error, message)
   }
 
-  async authorizeClientWithAccount(email: string, password: string): Promise<unknown> {
-    let authorization
-    try {
-      authorization = await this.server.authorizeWithAccount(this.requireIdentity(), email, password)
-    } catch (error) {
-      if (!(error instanceof ServerApiError) || error.code !== 'DEVICE_REVOKED') throw error
+  async authorizeClientWithAccount(email: string, password: string, verification?: AccountVerification): Promise<unknown> {
+    const authorization = await this.server.authorizeWithAccount(this.requireIdentity(), email, password, async () => {
       this.identity = await this.identities.reset(this.config.deviceName)
-      this.server.bindIdentity(this.identity)
-      authorization = await this.server.authorizeWithAccount(this.identity, email, password)
-    }
+      return this.identity
+    }, verification)
     await this.authorizeHostByDefault()
     this.clientAuthRequired = false
     this.logger.info('Client account authorized')
@@ -525,8 +523,12 @@ export class ClientModeRuntime {
       if (remote.features.codex) {
         await read('codex', () => discoverCodexVirtualWorkspaces(new CodexRemoteClient(remote.client), activeSignal))
       }
-      for (const backend of ['cursor', 'antigravity', 'pi', 'opencode', 'claude', 'hermes'] as const) {
-        if (!remote.features[backend]) continue
+      const knownAcpBackends = new Set<string>(['cursor', 'antigravity', 'pi', 'opencode', 'claude', 'hermes'])
+      for (const wt of remote.features.workspaceTypes ?? []) {
+        if (wt.id !== 'codex' && wt.id !== 'harness' && wt.available) knownAcpBackends.add(wt.id)
+      }
+      for (const backend of knownAcpBackends) {
+        if (!hasAcpFeature(remote.features, backend)) continue
         // Use the existing ACP catalog RPC directly: optional UI discovery swallows
         // backend errors, whereas a tool must distinguish unavailable from empty.
         await read(backend, async () => {
@@ -693,10 +695,10 @@ export class ClientModeRuntime {
     return this.openCodexWorkspace(targetDeviceId, codexProjectWorkspaceId(project.id), signal)
   }
 
-  async listCursorWorkspaces(targetDeviceId: string, signal?: AbortSignal, backend: 'cursor' | 'antigravity' | 'pi' | 'opencode' | 'claude' | 'hermes' = 'cursor'): Promise<AcpVirtualWorkspaceView[]> {
+  async listCursorWorkspaces(targetDeviceId: string, signal?: AbortSignal, backend = 'cursor'): Promise<AcpVirtualWorkspaceView[]> {
     const remote = await this.ensureConnected(targetDeviceId, signal)
     await this.refreshRemoteFeatures(remote)
-    if (!remote.features[backend]) {
+    if (!hasAcpFeature(remote.features, backend)) {
       throw new ClientModeError('FEATURE_NOT_SUPPORTED', `The selected Host does not provide ${backend} workspaces.`)
     }
     if (this.cursorVirtual !== undefined && this.connected?.target.deviceId === targetDeviceId && this.acpVirtualBackend === backend) {
@@ -711,11 +713,11 @@ export class ClientModeRuntime {
     targetDeviceId: string,
     workspaceId: string,
     signal?: AbortSignal,
-    backend: 'cursor' | 'antigravity' | 'pi' | 'opencode' | 'claude' | 'hermes' = 'cursor',
+    backend = 'cursor',
   ): Promise<Record<string, unknown>> {
     const remote = await this.ensureConnected(targetDeviceId, signal)
     await this.refreshRemoteFeatures(remote)
-    if (!remote.features[backend]) {
+    if (!hasAcpFeature(remote.features, backend)) {
       throw new ClientModeError('FEATURE_NOT_SUPPORTED', `The selected Host does not provide ${backend} workspaces.`)
     }
     this.assertLocalHarnessCarrierAvailable()
@@ -726,7 +728,7 @@ export class ClientModeRuntime {
         name: remote.target.name,
       },
       backend,
-      remote.features.acpModelLoadsSession ? ['agent.acp.antigravity.model-load.v1'] : [],
+      remoteAcpCapabilities(remote.features),
       this.remoteTypertGateway(remote),
       this.acpHistoryCache(remote.target.deviceId, backend),
     )
@@ -771,13 +773,13 @@ export class ClientModeRuntime {
     targetDeviceId: string,
     path: string,
     signal?: AbortSignal,
-    backend: 'cursor' | 'antigravity' | 'pi' | 'opencode' | 'claude' | 'hermes' = 'cursor',
+    backend = 'cursor',
   ): Promise<Record<string, unknown>> {
     const trimmedPath = path.trim()
     if (trimmedPath === '') throw new ClientModeError('INVALID_MESSAGE', `A ${backend} project directory is required.`)
     const remote = await this.ensureConnected(targetDeviceId, signal)
     await this.refreshRemoteFeatures(remote)
-    if (!remote.features[backend]) {
+    if (!hasAcpFeature(remote.features, backend)) {
       throw new ClientModeError('FEATURE_NOT_SUPPORTED', `The selected Host does not provide ${backend} workspaces.`)
     }
     this.assertLocalHarnessCarrierAvailable()
@@ -788,7 +790,7 @@ export class ClientModeRuntime {
         name: remote.target.name,
       },
       backend,
-      remote.features.acpModelLoadsSession ? ['agent.acp.antigravity.model-load.v1'] : [],
+      remoteAcpCapabilities(remote.features),
       this.remoteTypertGateway(remote),
       this.acpHistoryCache(remote.target.deviceId, backend),
     )
@@ -881,6 +883,48 @@ export class ClientModeRuntime {
     const remote = this.connected
     if (remote === undefined || this.status().mode !== 'remote') {
       throw new ClientModeError('REMOTE_NOT_CONNECTED', 'No Remote Host is selected.', true)
+    }
+    if (route === 'api/session/uploadFileBinary' && this.codexVirtual !== undefined) {
+      const virtual = this.codexVirtual
+      const request = record(body)
+      const payload = record(request.payload)
+      const session = parseCodexSessionId(payload.sessionId)
+      const data = typeof payload.data === 'string' ? payload.data : undefined
+      const limit = workspaceUploadMaxBytes(remote.client.getStats().mode)
+      if (session === undefined || data === undefined || data.length > Math.ceil(limit / 3) * 4
+        || (request.endpoint !== 'file' && request.endpoint !== 'image')) {
+        throw new ClientModeError('INVALID_MESSAGE', 'The CodeX upload is invalid or exceeds the transfer limit.')
+      }
+      const assertCurrent = () => {
+        this.assertRemoteCurrent(remote, signal)
+        if (this.codexVirtual !== virtual) throw new ClientModeError('REMOTE_NOT_CONNECTED', 'The selected CodeX workspace changed.')
+      }
+      assertCurrent()
+      await virtual.assertDesktopUploadSession(session.sessionId, signal)
+      assertCurrent()
+      const bytes = Buffer.from(data, 'base64')
+      if (bytes.length > limit || bytes.toString('base64') !== data) {
+        throw new ClientModeError('INVALID_MESSAGE', 'The CodeX upload is invalid or exceeds the transfer limit.')
+      }
+      const name = typeof payload.name === 'string' && payload.name.length > 0 ? payload.name : 'attachment'
+      const receiptId = uuidV7()
+      if (request.endpoint === 'image') {
+        const mediaType = payload.mediaType
+        if (typeof mediaType !== 'string' || !['image/png', 'image/jpeg', 'image/webp', 'image/gif'].includes(mediaType)
+          || bytes.length === 0 || bytes.length > 20 * 1024 * 1024) {
+          throw new ClientModeError('INVALID_MESSAGE', 'The CodeX image is unsupported or exceeds the image limit.')
+        }
+        virtual.registerDesktopUpload(session.sessionId, receiptId, { type: 'image', mediaType, data })
+        return { status: 200, json: { ok: true, value: { receiptId, file: { attachmentId: receiptId, name, bytes: bytes.length } } } }
+      }
+      const uploaded = await uploadRemoteBuffer(remote.client, session.sessionId, name, bytes, signal, assertCurrent)
+      assertCurrent()
+      virtual.registerDesktopUpload(session.sessionId, receiptId, {
+        type: 'text', text: `\nAttached workspace file: ${JSON.stringify(uploaded.path)}\n`,
+      })
+      return { status: 200, json: { ok: true, value: {
+        receiptId, file: { attachmentId: receiptId, name: uploaded.name, bytes: uploaded.bytes },
+      } } }
     }
     if (!remote.features.pluginRoute) {
       throw new ClientModeError('FEATURE_NOT_SUPPORTED', 'The connected Host cannot forward plugin routes.')
@@ -1165,6 +1209,23 @@ export class ClientModeRuntime {
       }
     }, error)
   }
+}
+
+function hasAcpFeature(features: RemoteHostFeatures, backend: string): boolean {
+  if (backend === 'cursor') return features.cursor
+  if (backend === 'antigravity') return features.antigravity
+  if (backend === 'pi') return Boolean(features.pi)
+  if (backend === 'opencode') return features.opencode
+  if (backend === 'claude') return Boolean(features.claude)
+  if (backend === 'hermes') return Boolean(features.hermes)
+  return features.workspaceTypes?.some(item => item.id === backend && item.available) ?? false
+}
+
+function remoteAcpCapabilities(features: RemoteHostFeatures): string[] {
+  return [
+    ...(features.acpModelLoadsSession ? ['agent.acp.antigravity.model-load.v1'] : []),
+    ...(features.acpOpencodeArchive ? ['agent.acp.opencode.archive.v1'] : []),
+  ]
 }
 
 export { probeRemoteHostFeatures, remoteHostFeatures } from './client-capabilities.js'

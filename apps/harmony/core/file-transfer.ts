@@ -1,6 +1,6 @@
 import fs from '@ohos.file.fs'
-import { uploadFileReaderToWorkspace, workspaceUploadMaxBytes, type RpcCaller } from '../../android/src/screens/chat-files'
-import { createNativeRpcId } from '../../android/src/services/rpc-id'
+import { uploadFileReaderToWorkspace, workspaceUploadMaxBytes, type RpcCaller } from '../../../packages/app-core/src/screens/chat-files'
+import { createNativeRpcId } from '../../../packages/app-core/src/services/rpc-id'
 export async function uploadFile(
   rpc: (method: string, args: unknown, signal?: AbortSignal) => Promise<unknown>,
   sessionId: string, name: string, data: string, current: () => boolean, signal: AbortSignal,

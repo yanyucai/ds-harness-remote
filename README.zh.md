@@ -25,6 +25,9 @@
   <a href="https://dshfind.com/zh/plugins/liguobao/ds-harness-remote?ref=badge"><img src="https://dshfind.com/api/badge/liguobao/ds-harness-remote?metric=downloads&amp;lang=zh" alt="dshfind 下载量"></a>
 </p>
 
+<p align="center">
+  <a href="https://trendshift.io/repositories/177732" target="_blank"><img src="https://trendshift.io/api/badge/repositories/177732" alt="liguobao%2Fds-harness-remote | Trendshift" style="width: 250px; height: 55px;" width="250" height="55"/></a>
+</p>
 
 ## 一次连接，随时可用。
 
@@ -56,10 +59,10 @@ Harness 始终运行在工作电脑上，原有的工作区、工具和项目配
 | DSH 插件 | Remote 侧栏 | 已支持 | 主控、被控任君差遣~ |
 | Web | 浏览器页面 | 已支持 | 打开 [https://dsh.r2049.cn](https://dsh.r2049.cn)，复用 Harness 原生界面 |
 | Android | 原生 App | 已支持 | 从 [Releases](https://github.com/liguobao/ds-harness-remote/releases/latest) 下载 APK，见 [Android 说明](apps/android/README.md) |
-| HarmonyOS NEXT | ArkUI 原生预览 | 实验性移植 | 基于 Android v0.6.5，见 [鸿蒙移植说明](apps/harmony/README.md) |
+| HarmonyOS | 原生 App | 已支持 | 从 [Releases](https://github.com/liguobao/ds-harness-remote/releases/latest) 下载 |
 | DSH Go | C佬精品 | 已支持 | 详情见：[ccch1mneyyy/dsh-go: 手机上直接跑，也能遥控你电脑上的 DSH。](https://github.com/ccch1mneyyy/dsh-go)
 | iOS | TestFlight 内测 | 内测 | 未公开上架，入口见 [issue #20](https://github.com/liguobao/ds-harness-remote/issues/20) |
-| dsh-TUI | 纯终端 CLI | 计划中 | 本版本不包含该集成，将在后续版本单独提供；安装脚本不会为它自动创建 Web 服务 |
+| dsh-TUI | 独立 Host 组合包 + CLI | 核心真机验收通过 | 安装同版本 `ds-harness-remote-tui`，见[验证版本与边界](docs/compatibility.md)；安装脚本不会为它自动创建 Web 服务 |
 | Linux  | 云服务器  | 已支持 | [官网](https://dsh.r2049.cn/)登录后一键安装。
 
 多个客户端可以同时连接同一个 Host，RPC 与数据流按连接隔离。
@@ -107,7 +110,9 @@ DSH 0.2.2 起，npm 安装支持在插件页检查版本和一键更新；热更
 
 默认使用本项目提供的 [https://dsh.r2049.cn](https://dsh.r2049.cn) 托管 Remote Server。
 
-自建托管Server可使用仓库内的[最小 Server](apps/server/README.zh.md)，当前版本已包含 WebRTC LAN/P2P/TURN 连接协调（TURN 需自行部署 coturn）与加密 Relay Server 等功能，暂不支持托管Remote Web的完整功能。
+自建托管Server可使用仓库内的[最小 Server](apps/server/README.zh.md)。
+
+当前版本已包含 WebRTC LAN/P2P/TURN 连接协调（TURN 需自行部署 coturn）与加密 Relay Server 等功能，暂不支持托管Remote Web的完整功能。
 
 ## 界面截图
 
@@ -169,7 +174,7 @@ Host 启动本机支持ACP 的Agent，通过ds-harness-remote 通道传递 Promp
 
 Claude 和 Hermes 均支持直接 Files/Terminal 访问，复用 Host 的工作区路径隔离与终端权限设置。
 
-配置与后端适配开发见 [Agent 工作区接入指南](docs/acp-integration.md)。
+配置与后端适配开发见 [Agent 工作区接入指南](docs/acp-remote.md)。
 
 Desktop/Android 的 Cursor、Claude、Hermes、Pi、OpenCode、AGY 模型选择使用 Host 实际模型目录，由Agent ACP决定
 
@@ -276,6 +281,7 @@ DS Bot 是一个基于 DeepSeek Harness（简称 dsh）的 bot 插件，插件�
 - [Codex Remote 技术说明](docs/codex-remote.md)
 - [ACP Remote / Agent adapter 技术说明](docs/acp-remote.md)
 - [文档索引](docs/README.md)
+- [贡献指南](CONTRIBUTING.zh.md)（[English](CONTRIBUTING.md)）
 - [端到端加密](docs/end-to-end-encryption.md)
 - [网络与传输](docs/network.md)
 - [远程协议](docs/protocol.md)
@@ -288,7 +294,8 @@ DS Bot 是一个基于 DeepSeek Harness（简称 dsh）的 bot 插件，插件�
 ## 友情链接
 
 - 友情链接：[DSH Go](https://github.com/ccch1mneyyy/dsh-go) — 把 DeepSeek Harness 装进口袋：手机本机运行，也能遥控你的电脑。「已适配 Remote。」
-- 友情链接：[dsh-TUI](https://github.com/ccch1mneyyy/dsh-TUI)（终端优先的 Harness 客户端，Remote 集成计划在后续版本提供）
+- 友情链接：[dsh-TUI](https://github.com/ccch1mneyyy/dsh-TUI)（终端优先的 Harness 客户端，Remote Host 使用独立 `ds-harness-remote-tui` 组合包）
+- 友情链接：[akazwz/hostc](https://github.com/akazwz/hostc) Localhost, anywhere. One command gives your dev server a public HTTPS URL, with WebSockets and hot reload. Free, no account, runs on Cloudflare Workers.
 - 友情链接：[LINUX DO 社区](https://linux.do/)
 - 友情链接：[赛博刘看山](https://kanshan.r2049.cn/)
 
@@ -312,6 +319,8 @@ DS Bot 是一个基于 DeepSeek Harness（简称 dsh）的 bot 插件，插件�
 - **文档与多语言**：完善使用指南、修正表述细节，或协助保持中文、英文与日文文档同步。
 - **测试与多端体验**：在你的实际环境中（Desktop / Web / Android）体验运行，反馈真实场景下的表现。
 - **代码与代码审查**：认领待办事项、修复缺陷、实现新特性，或是协助 Review 社区的 Pull Request。
+
+准备开始参与？请先阅读[贡献指南](CONTRIBUTING.zh.md)（[English](CONTRIBUTING.md)），了解开发环境、验证命令与 PR 提交规范。
 
 <p align="center">
   <a href="https://github.com/liguobao/ds-harness-remote/graphs/contributors">

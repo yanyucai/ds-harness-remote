@@ -160,4 +160,101 @@ describe('Claude isolated history and live session recovery', () => {
       await expect(client.history('saved', '/tmp')).rejects.toMatchObject({ code: 'ACP_CLOSED' })
     }
   })
+
+  it('intercepts requests during session/load replay and holds a bounded tombstone after timeout (#466)', async () => {
+    let pendingLoad: Wire | undefined
+    const { client, children } = setup((message) => {
+      if (message.method === 'session/load') {
+        pendingLoad = message
+        return true
+      }
+      return false
+    })
+    const inbound = vi.fn()
+    client.onInbound(inbound)
+    try {
+      await client.start()
+      // Keep another live session active on the shared process to verify isolation.
+      const liveSession = await client.call('session/new', { cwd: '/tmp' }) as { sessionId: string }
+
+      // 1) During active session/load, both replay notifications and upstream requests are intercepted.
+      const firstLoadOutcome = client.call('session/load', { sessionId: 'replay-1', cwd: '/tmp' }, 30).then(
+        result => ({ result, error: undefined }),
+        error => ({ result: undefined, error }),
+      )
+      await vi.waitFor(() => expect(pendingLoad).toBeDefined())
+      children[0].update('replay-1', chunk('agent_message_chunk', 'replayed'))
+      children[0].send({ id: 'perm-during-load', method: 'session/request_permission', params: { sessionId: 'replay-1', options: [] } })
+      children[0].send({ id: 'other-during-load', method: 'fs/read_text_file', params: { sessionId: 'replay-1' } })
+      // Live session events on the same process must still pass through.
+      children[0].update(liveSession.sessionId, chunk('agent_message_chunk', 'live-ok'))
+      await tick()
+      expect(inbound).toHaveBeenCalledTimes(1)
+      expect(inbound).toHaveBeenCalledWith(expect.objectContaining({
+        kind: 'notification',
+        params: expect.objectContaining({ sessionId: liveSession.sessionId }),
+      }))
+      expect(children[0].sent.find(m => m.id === 'perm-during-load')?.result).toEqual({ outcome: { outcome: 'cancelled' } })
+      expect(children[0].sent.find(m => m.id === 'other-during-load')?.error).toMatchObject({ code: -32600 })
+
+      // 2) When session/load times out, late replay frames & requests remain suppressed by the tombstone.
+      expect((await firstLoadOutcome).error).toMatchObject({ code: 'CLAUDE_REQUEST_TIMEOUT' })
+      children[0].update('replay-1', chunk('agent_message_chunk', 'late-replay-after-timeout'))
+      children[0].send({ id: 'perm-after-timeout', method: 'session/request_permission', params: { sessionId: 'replay-1', options: [] } })
+      await tick()
+      expect(inbound).toHaveBeenCalledTimes(1)
+      expect(children[0].sent.find(m => m.id === 'perm-after-timeout')?.result).toEqual({ outcome: { outcome: 'cancelled' } })
+
+      // 3) A subsequent successful session/load lifts suppression for future live turns.
+      const retryLoad = client.call('session/load', { sessionId: 'replay-1', cwd: '/tmp' })
+      await vi.waitFor(() => expect(children[0].sent.filter(m => m.method === 'session/load')).toHaveLength(2))
+      const secondLoadReq = children[0].sent.filter(m => m.method === 'session/load')[1]!
+      children[0].reply(secondLoadReq, {})
+      await retryLoad
+      children[0].update('replay-1', chunk('agent_message_chunk', 'now-live'))
+      await tick()
+      expect(inbound).toHaveBeenCalledTimes(2)
+      expect(inbound).toHaveBeenLastCalledWith(expect.objectContaining({
+        kind: 'notification',
+        params: expect.objectContaining({ sessionId: 'replay-1' }),
+      }))
+    } finally { await client.close() }
+  })
+
+  it('caches models and modes from history() without marking the session live, and clears cache on load or invalidation', async () => {
+    const { client } = setup((message, child, index) => {
+      if (message.method === 'session/load' && index === 1) {
+        child.reply(message, {
+          models: {
+            currentModelId: 'gemini-3-pro',
+            availableModels: [{ modelId: 'gemini-3-pro', name: 'Gemini 3 Pro' }],
+          },
+          modes: {
+            currentModeId: 'agent',
+            availableModes: [{ id: 'agent', name: 'Agent' }],
+          },
+        })
+        return true
+      }
+      return false
+    })
+    try {
+      await client.start()
+      expect(client.isSessionLoaded('saved-meta')).toBe(false)
+      await client.history('saved-meta', '/tmp')
+      expect(client.isSessionLoaded('saved-meta')).toBe(false)
+      expect(client.lastHistoryMetadata('saved-meta')).toMatchObject({
+        models: { current: { model: 'gemini-3-pro' } },
+        modes: { currentModeId: 'agent', availableModes: [{ id: 'agent', name: 'Agent' }] },
+      })
+      client.invalidateHistoryMetadata('saved-meta')
+      expect(client.lastHistoryMetadata('saved-meta')).toBeUndefined()
+
+      await client.history('saved-meta', '/tmp')
+      expect(client.lastHistoryMetadata('saved-meta')).toBeDefined()
+      await client.call('session/load', { sessionId: 'saved-meta', cwd: '/tmp', mcpServers: [] })
+      expect(client.isSessionLoaded('saved-meta')).toBe(true)
+      expect(client.lastHistoryMetadata('saved-meta')).toBeUndefined()
+    } finally { await client.close() }
+  })
 })

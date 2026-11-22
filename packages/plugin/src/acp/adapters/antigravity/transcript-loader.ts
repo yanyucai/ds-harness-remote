@@ -5,10 +5,36 @@ import { isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { homedir } from 'node:os'
 import { createRequire } from 'node:module'
+import { RpcError } from '../../../safe-error.js'
 import type { StepLogRecord } from './types.js'
 
 // Load prefix-only Node builtins natively, including under older Vite runners.
 const nodeRequire = createRequire(import.meta.url)
+
+const FIRST_LINE_CHUNK_BYTES = 4096
+const MAX_FIRST_LINE_BYTES = 256 * 1024
+
+async function readFirstLine(handle: fs.FileHandle): Promise<string | undefined> {
+  const chunks: Buffer[] = []
+  let totalBytes = 0
+  while (totalBytes <= MAX_FIRST_LINE_BYTES) {
+    const chunk = Buffer.allocUnsafe(FIRST_LINE_CHUNK_BYTES)
+    const { bytesRead } = await handle.read(chunk, 0, chunk.length, totalBytes)
+    if (bytesRead === 0) break
+    const slice = chunk.subarray(0, bytesRead)
+    const newlineIndex = slice.indexOf(0x0a)
+    if (newlineIndex !== -1) {
+      const lineBytes = totalBytes + newlineIndex
+      if (lineBytes > MAX_FIRST_LINE_BYTES) return undefined
+      chunks.push(slice.subarray(0, newlineIndex))
+      return Buffer.concat(chunks, lineBytes).toString('utf-8')
+    }
+    totalBytes += bytesRead
+    if (totalBytes > MAX_FIRST_LINE_BYTES) return undefined
+    chunks.push(slice)
+  }
+  return totalBytes > 0 ? Buffer.concat(chunks, totalBytes).toString('utf-8') : undefined
+}
 
 export interface HydratedSessionEvent {
   type: 'event'
@@ -39,9 +65,14 @@ export async function loadTranscriptEvents(
   let content = ''
   try {
     const filePath = await transcriptPath(baseDir, conversationId)
-    if (filePath === undefined || (await fs.stat(filePath)).size > MAX_AGENT_ACP_TRANSFER_BYTES) return []
+    if (filePath === undefined) return []
+    const info = await fs.stat(filePath)
+    if (info.size > MAX_AGENT_ACP_TRANSFER_BYTES) {
+      throw new RpcError('ACP_HISTORY_TOO_LARGE', 'Antigravity history exceeds the transfer limit.')
+    }
     content = await fs.readFile(filePath, 'utf-8')
-  } catch {
+  } catch (error) {
+    if (error instanceof RpcError) throw error
     return []
   }
 
@@ -105,9 +136,13 @@ export async function loadTranscriptEvents(
       }
 
       if (Array.isArray(record.tool_calls)) {
+        const seenNames = new Map<string, number>()
         for (const call of record.tool_calls) {
           const toolName = (typeof call.name === 'string' && call.name.length > 0) ? call.name : 'tool'
-          const callId = `${record.step_index}:${toolName}`
+          const count = seenNames.get(toolName) ?? 0
+          seenNames.set(toolName, count + 1)
+          const callId = count === 0 ? `${record.step_index}:${toolName}` : `${record.step_index}:${toolName}:${count}`
+          const isError = call.status === 'ERROR'
           push('tool/call', {
             turn: currentTurn,
             step: 1,
@@ -116,8 +151,35 @@ export async function loadTranscriptEvents(
             arguments: typeof call.args === 'object' && call.args !== null ? JSON.stringify(call.args) : '{}',
             toolCallId: callId,
             toolName,
-            status: call.status === 'ERROR' ? 'failed' : 'finished',
+            status: isError ? 'failed' : 'finished',
           }, time, false)
+          if (call.status !== 'CALLING' && call.status !== 'EXECUTING') {
+            let resultText = ''
+            if (typeof call.result === 'string') {
+              resultText = call.result
+            } else if (call.result !== undefined && call.result !== null) {
+              try {
+                resultText = JSON.stringify(call.result)
+              } catch {
+                resultText = ''
+              }
+            }
+            push('tool/result', {
+              turn: currentTurn,
+              step: 1,
+              message: {
+                id: `${sessionId}:${record.step_index}:tool-result:${callId}`,
+                role: 'user',
+                source: { kind: 'tool', callId },
+                content: [{
+                  type: 'tool-result',
+                  toolCallId: callId,
+                  content: resultText.length > 0 ? [{ type: 'text', text: resultText }] : [],
+                  ...(isError ? { isError: true } : {}),
+                }],
+              },
+            }, time, true)
+          }
         }
       }
 
@@ -185,7 +247,7 @@ async function querySqliteJson<T = unknown>(dbPath: string, sql: string, params:
       const val = typeof p === 'number' ? String(p) : `'${String(p).replace(/'/g, "''")}'`
       formattedSql = formattedSql.replace('?', val)
     }
-    const { stdout } = await execFileAsync('sqlite3', [dbPath, '-json', formattedSql])
+    const { stdout } = await execFileAsync('sqlite3', [dbPath, '-json', formattedSql], { windowsHide: true })
     return JSON.parse(stdout || '[]') as T[]
   } catch {
     return []
@@ -250,9 +312,7 @@ async function readTranscriptSummary(baseDir: string, conversationId: string): P
     const stat = await fs.stat(path)
     const handle = await fs.open(path, 'r')
     try {
-      const buffer = Buffer.alloc(4096)
-      const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0)
-      const firstLine = buffer.subarray(0, bytesRead).toString('utf-8').split('\n')[0]
+      const firstLine = await readFirstLine(handle)
       if (!firstLine) return undefined
       const record = JSON.parse(firstLine) as StepLogRecord
       if (record.type !== 'USER_INPUT') return undefined
@@ -327,9 +387,7 @@ export async function discoverAntigravitySessions(
       const s = await fs.stat(path)
       const handle = await fs.open(path, 'r')
       try {
-        const buf = Buffer.alloc(4096)
-        const { bytesRead } = await handle.read(buf, 0, 4096, 0)
-        const firstLine = buf.subarray(0, bytesRead).toString('utf-8').split('\n')[0]
+        const firstLine = await readFirstLine(handle)
         if (firstLine) {
           const parsed = JSON.parse(firstLine) as StepLogRecord
           const rawPrompt = cleanUserPrompt(parsed.content)

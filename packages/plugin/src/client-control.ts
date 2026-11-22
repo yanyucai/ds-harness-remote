@@ -12,20 +12,19 @@ import type {
   RemoteWorkspaceSelection,
   RemoteWorkspaceView,
 } from './client-runtime-contract.js'
-import { ClientModeError, fail, isRecord, ok, record } from './client-runtime-contract.js'
+import { ClientModeError, fail, isRecord, ok, readAccountVerification, record } from './client-runtime-contract.js'
 import type { CodexVirtualWorkspaceView } from './codex/virtual-harness.js'
 import type { RemoteFileViewerEndpoint } from './file-viewer-contract.js'
 import { LoopbackPreview } from './loopback-preview.js'
 import { isAllowedPluginRoute } from './plugin-route-bridge.js'
-import type { OAuthProvider } from './server-api.js'
-import { ClientServerApi } from './server-api.js'
+import type { AccountVerification, ClientServerApi, OAuthProvider } from './server-api.js'
 
 /** Collaborates with one ClientModeRuntime; never creates a second session or connection state. */
 export interface ClientControlContext {
   readonly detailedStatus: () => Promise<Record<string, unknown>>
   readonly devices: () => Promise<RemoteDeviceView[]>
   readonly server: ClientServerApi
-  readonly authorizeClientWithAccount: (email: string, password: string) => Promise<unknown>
+  readonly authorizeClientWithAccount: (email: string, password: string, verification?: AccountVerification) => Promise<unknown>
   readonly startClientOAuthQrLogin: (provider: OAuthProvider) => Promise<unknown>
   readonly pollClientOAuthQrLogin: (qrId: string) => Promise<unknown>
   readonly activeRemote: () => ConnectedRemote | undefined
@@ -36,9 +35,9 @@ export interface ClientControlContext {
   readonly openRemoteWorkspace: (targetDeviceId: string, path: string, signal?: AbortSignal) => Promise<Record<string, unknown>>
   readonly openCodexWorkspace: (targetDeviceId: string, workspaceId: string, signal?: AbortSignal) => Promise<Record<string, unknown>>
   readonly createCodexWorkspace: (targetDeviceId: string, path: string, signal?: AbortSignal) => Promise<Record<string, unknown>>
-  readonly listCursorWorkspaces: (targetDeviceId: string, signal?: AbortSignal, backend?: "cursor" | "antigravity" | "pi" | "opencode" | "claude" | "hermes") => Promise<AcpVirtualWorkspaceView[]>
-  readonly openCursorWorkspace: (targetDeviceId: string, workspaceId: string, signal?: AbortSignal, backend?: "cursor" | "antigravity" | "pi" | "opencode" | "claude" | "hermes") => Promise<Record<string, unknown>>
-  readonly createCursorWorkspace: (targetDeviceId: string, path: string, signal?: AbortSignal, backend?: "cursor" | "antigravity" | "pi" | "opencode" | "claude" | "hermes") => Promise<Record<string, unknown>>
+  readonly listCursorWorkspaces: (targetDeviceId: string, signal?: AbortSignal, backend?: string) => Promise<AcpVirtualWorkspaceView[]>
+  readonly openCursorWorkspace: (targetDeviceId: string, workspaceId: string, signal?: AbortSignal, backend?: string) => Promise<Record<string, unknown>>
+  readonly createCursorWorkspace: (targetDeviceId: string, path: string, signal?: AbortSignal, backend?: string) => Promise<Record<string, unknown>>
   readonly consumeWorkspaceSelection: (selection: RemoteWorkspaceSelection) => Record<string, unknown>
   readonly callRemoteFileViewer: (endpoint: RemoteFileViewerEndpoint, payload: unknown, signal?: AbortSignal) => Promise<unknown>
   readonly activeCodexRemote: () => ConnectedRemote | undefined
@@ -69,7 +68,7 @@ export class ClientControl {
         if (typeof value.email !== 'string' || typeof value.password !== 'string') {
           throw new ClientModeError('INVALID_MESSAGE', 'Email and password are required.')
         }
-        return ok(await this.context.authorizeClientWithAccount(value.email, value.password))
+        return ok(await this.context.authorizeClientWithAccount(value.email, value.password, readAccountVerification(value.verification)))
       }
       if (endpoint === 'client.account.qr.start') {
         const value = record(payload)
@@ -246,6 +245,49 @@ export class ClientControl {
         }
         return ok(await this.context.createCursorWorkspace(value.targetDeviceId, value.path, signal, 'hermes'))
       }
+      if (endpoint === 'acp.workspaces.list') {
+        const value = record(payload)
+        if (typeof value.targetDeviceId !== 'string' || typeof value.backend !== 'string' || value.backend.trim() === '') {
+          throw new ClientModeError('INVALID_MESSAGE', 'A Host and ACP backend are required.')
+        }
+        return ok(await this.context.listCursorWorkspaces(value.targetDeviceId, signal, value.backend.trim()))
+      }
+      if (endpoint === 'acp.workspace.open') {
+        const value = record(payload)
+        if (typeof value.targetDeviceId !== 'string' || typeof value.workspaceId !== 'string' || typeof value.backend !== 'string' || value.backend.trim() === '') {
+          throw new ClientModeError('INVALID_MESSAGE', 'A Host, ACP backend, and Workspace are required.')
+        }
+        return ok(await this.context.openCursorWorkspace(value.targetDeviceId, value.workspaceId, signal, value.backend.trim()))
+      }
+      if (endpoint === 'acp.workspace.create') {
+        const value = record(payload)
+        if (typeof value.targetDeviceId !== 'string' || typeof value.path !== 'string' || typeof value.backend !== 'string' || value.backend.trim() === '') {
+          throw new ClientModeError('INVALID_MESSAGE', 'A Host, ACP backend, and project directory are required.')
+        }
+        return ok(await this.context.createCursorWorkspace(value.targetDeviceId, value.path, signal, value.backend.trim()))
+      }
+      const dynamicListMatch = /^([a-z0-9][a-z0-9_-]{0,31})\.workspaces\.list$/.exec(endpoint)
+      if (dynamicListMatch !== null) {
+        const value = record(payload)
+        if (typeof value.targetDeviceId !== 'string') throw new ClientModeError('INVALID_MESSAGE', 'A Host is required.')
+        return ok(await this.context.listCursorWorkspaces(value.targetDeviceId, signal, dynamicListMatch[1]!))
+      }
+      const dynamicOpenMatch = /^([a-z0-9][a-z0-9_-]{0,31})\.workspace\.open$/.exec(endpoint)
+      if (dynamicOpenMatch !== null) {
+        const value = record(payload)
+        if (typeof value.targetDeviceId !== 'string' || typeof value.workspaceId !== 'string') {
+          throw new ClientModeError('INVALID_MESSAGE', `A Host and ${dynamicOpenMatch[1]} Workspace are required.`)
+        }
+        return ok(await this.context.openCursorWorkspace(value.targetDeviceId, value.workspaceId, signal, dynamicOpenMatch[1]!))
+      }
+      const dynamicCreateMatch = /^([a-z0-9][a-z0-9_-]{0,31})\.workspace\.create$/.exec(endpoint)
+      if (dynamicCreateMatch !== null) {
+        const value = record(payload)
+        if (typeof value.targetDeviceId !== 'string' || typeof value.path !== 'string') {
+          throw new ClientModeError('INVALID_MESSAGE', `A Host and ${dynamicCreateMatch[1]} project directory are required.`)
+        }
+        return ok(await this.context.createCursorWorkspace(value.targetDeviceId, value.path, signal, dynamicCreateMatch[1]!))
+      }
       if (endpoint === 'workspace.selection.consume') {
         const value = record(payload)
         if (typeof value.targetDeviceId !== 'string' || typeof value.workspaceId !== 'string') {
@@ -316,7 +358,7 @@ export class ClientControl {
         if (typeof value.email !== 'string' || typeof value.password !== 'string') {
           throw new ClientModeError('INVALID_MESSAGE', 'Email and password are required.')
         }
-        return ok(await this.context.host.authorizeHostWithAccount(value.email, value.password))
+        return ok(await this.context.host.authorizeHostWithAccount(value.email, value.password, readAccountVerification(value.verification)))
       }
       if (endpoint === 'host.authorization.set') {
         const value = record(payload)

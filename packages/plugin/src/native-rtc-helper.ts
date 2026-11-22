@@ -179,6 +179,7 @@ export function isUsableExternalNode(candidate: string, requireFrom: string): bo
     env,
     encoding: 'utf8',
     timeout: 3_000,
+    windowsHide: true,
   })
   return probe.status === 0 && probe.stdout.startsWith('node:')
 }
@@ -223,6 +224,7 @@ class ExternalNativePeerConnection implements RtcPeerConnection {
       cwd: dirname(this.requireFrom),
       env: { ...process.env, DSH_REMOTE_RTC_HELPER_REQUIRE_FROM: this.requireFrom },
       stdio: ['pipe', 'pipe', 'pipe'],
+      windowsHide: true,
     }) as ChildProcessWithoutNullStreams
     this.child.stdout.setEncoding('utf8')
     this.child.stdout.on('data', chunk => this.handleStdout(String(chunk)))
@@ -230,7 +232,7 @@ class ExternalNativePeerConnection implements RtcPeerConnection {
     this.child.on('exit', () => this.handleExit())
     this.child.on('error', error => this.handleExit(error))
     this.child.stdin.on('error', error => this.handleExit(error))
-    this.ready = this.request('init', { iceServers: configuration.iceServers ?? [] }).then(() => undefined)
+    this.ready = this.request('init', { iceServers: configuration.iceServers ?? [], iceTransportPolicy: configuration.iceTransportPolicy }).then(() => undefined)
   }
 
   createDataChannel(label: string, options?: RtcDataChannelInit): RtcDataChannel {
@@ -548,7 +550,7 @@ async function handle(command) {
   const { id, method, payload = {} } = command
   try {
     if (method === 'init') {
-      pc = new RTCPeerConnection({ iceServers: payload.iceServers ?? [] })
+      pc = new RTCPeerConnection({ iceServers: payload.iceServers ?? [], iceTransportPolicy: payload.iceTransportPolicy })
       pc.onconnectionstatechange = emitState
       pc.oniceconnectionstatechange = emitState
       pc.onicegatheringstatechange = emitState

@@ -5,7 +5,7 @@ import { prefs, secrets } from './native/state'
 import { files, handles } from './native/fs'
 import { uploadNativeFile } from '../core/file-transfer'
 import { nativeLabels } from '../core/native-labels'
-import type { RpcCaller } from '../../android/src/screens/chat-files'
+import type { RpcCaller } from '../../../packages/app-core/src/screens/chat-files'
 
 beforeEach(async () => { Object.defineProperty(globalThis,'crypto',{value:globalThis.crypto,writable:true,configurable:true}); prefs.clear(); secrets.clear(); files.clear(); handles.clear(); installPlatform(); await attachPreferences({}) })
 afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers() })

@@ -1,5 +1,5 @@
-import { checkedBotView } from '../../android/src/services/bot-view'
-import { resolve, viewScope, viewInputs, inputDefault, choiceValue, asText, validateViewAnswer } from '../../android/src/vendor/ds-bot/views.js'
+import { checkedBotView } from '../../../packages/app-core/src/services/bot-view'
+import { resolve, viewScope, viewInputs, inputDefault, choiceValue, asText, validateViewAnswer } from '../../../packages/app-core/src/vendor/ds-bot/views.js'
 
 const dictionary = () => Object.create(null)
 let pending = {}, view, inputs = dictionary(), forms = dictionary(), selections = dictionary(), revision = '', token = '', sending = false, submitted = false, errorText = '', replySequence = 0, pendingReply = 0

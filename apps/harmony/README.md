@@ -1,8 +1,8 @@
 # DSH Remote 鸿蒙原生移植预览版
 
-当前版本 **0.6.5 / 6839**，比较基准为上游 Android main `936d107b918704a91df9988e58991f5076e075c2`（Android `0.6.5` / `versionCode 72`）。这是 HarmonyOS NEXT Stage / ArkUI 客户端，复用共享协议、加密、连接和平台独立逻辑。鸿蒙 `versionName` 与 Android 对齐；内部版本继续单调递增，确保覆盖安装不会因版本码回退被拒绝。
+当前版本 **0.6.7 / 6840**，比较基准为上游 Android main `fac811d717815661794bb63c9364caa65aaac7da`（Android `0.6.7` / `versionCode 75`）。这是 HarmonyOS NEXT Stage / ArkUI 客户端，复用共享协议、加密、连接和平台独立逻辑。鸿蒙 `versionName` 与 Android 对齐；内部版本继续单调递增，确保覆盖安装不会因版本码回退被拒绝。
 
-本版合入最新 Android 共享协议、连接、自动恢复、WebRTC/中继、流式文件上传和压缩逻辑，并补齐普通文件与视频选择、上传进度与取消、异步 `/compact` 跟踪、会话目录实时同步、Bot 实时卡片与状态、DS-Bot 设置入口、聊天外观和活动显示模式。原生 ArkUI 页面继续复用平台无关逻辑，文件、通知、后台任务、终端、WebView 和选择器使用 HarmonyOS 系统能力。完整范围和剩余边界见 [对齐记录](../../docs/harmonyos-alignment-0.6.3.md)。
+本版合入最新 Android 共享协议、连接、自动恢复、WebRTC/中继、流式文件上传和压缩逻辑，并补齐普通文件与视频选择、上传进度与取消、异步 `/compact` 跟踪、会话目录实时同步、Bot 实时卡片与状态、DS-Bot 设置入口、双因素登录、会员状态、DSH Web、运行中排队/插话、实时传输升级、聊天外观、活动显示模式，以及 Harness / CodeX / OpenCode 会话归档和 Harness 取消归档。原生 ArkUI 页面继续复用平台无关逻辑，文件、通知、后台任务、终端、WebView 和选择器使用 HarmonyOS 系统能力。完整范围和剩余边界见 [对齐记录](../../docs/harmonyos-alignment-0.6.3.md)。
 
 为与已安装的 Android 版并存，鸿蒙版独立包名为 `io.github.dshremote.harmony`，桌面名称为「DSH Remote 鸿蒙」。Android 版仍使用上游包名 `io.github.liguobao.dshremote`。
 
@@ -80,6 +80,6 @@ hdc install entry/build/default/outputs/default/entry-default-signed.hap
 
 本次验证详情及验收清单见 [docs/harmonyos.md](../../docs/harmonyos.md)。
 
-2026-11-14 对齐状态：源码已合入 Android 0.6.5 主分支并完成鸿蒙平台适配；自动化与原生 HAP 构建结果记录在 [对齐记录](../../docs/harmonyos-alignment-0.6.3.md)。设备验收仍以实际连接、文件操作和各后端交互为准。
+2026-11-22 对齐状态：源码已合入 Android 0.6.7 主分支并完成鸿蒙平台适配；设备验收仍以实际连接、文件操作和各后端交互为准。
 
 公开源码使用通用包名 `io.github.dshremote.harmony`。既有设备上的私人开发签名包使用独立包名；从公开源码构建时应自行配置包名与签名，不能据此覆盖私人签名安装。

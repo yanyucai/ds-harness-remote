@@ -1,14 +1,64 @@
-## Unreleased
+# Changelog
 
-### English
+版本条目保留发布时的功能和验证范围；当前使用方式与限制见[文档入口](README.md)和[版本兼容](compatibility.zh.md)。
 
-- Update an npm-installed Remote plugin from the Desktop dialog when Harness can replace that bundle, and keep a releases-page link beside that action. GitHub and local installs still open the releases page directly. A connected device still cannot replace the Host's Remote plugin.
+## 0.6.7
+
+Android versionCode **75** · iOS buildNumber floor **75**
 
 ### 中文
 
-- 从 npm 安装的 Remote 插件，可以在 Desktop 弹窗里直接升级（需要 Harness 支持替换该 bundle），「可用」旁边保留发布页链接。GitHub 与本地安装仍直接打开发布页。已连接的远端设备仍然不能替换 Host 上的 Remote 插件。
+- **DSH Web** · 可从主机详情经局域网打开主机上的 DSH Web，支持经验证的同链路 IPv6。Host 找不到可用的本机监听地址时，支持隧道的客户端可继续通过隧道打开。隧道的 WebSocket 单帧上限提高到 16 MiB。
+- **登录与移动端** · 密码登录支持输入二次验证码或恢复码。Android 和 iOS 改善了平板抽屉、弹窗和 Antigravity 的权限选项、历史图片回放及命令菜单。
+- **会话与连接** · Codex 会话重连后可恢复消息流并补齐截断的回复，Host 更可靠地清理 Codex 后台进程。Desktop 支持预览消息中的文件附件。自部署 Server 在计划停机时可避免将正常断开报为连接失败。
+- **鸿蒙** · 更新登录、主机列表和会话页面，使常用操作与 Android 更一致。
 
-## 0.6.5 — 2026-11-13
+### English
+
+- **DSH Web** · Open the Host’s DSH Web from Host details over the LAN, including verified same-link IPv6. If the Host has no usable local listening address, clients with tunnel support can open it through the tunnel. The tunnel now supports WebSocket frames up to 16 MiB.
+- **Sign-in and mobile** · Password sign-in accepts two-factor verification and recovery codes. Android and iOS improve tablet drawers and dialogs, along with Antigravity permission choices, historical image rendering, and command menus.
+- **Sessions and connections** · Codex sessions resume streaming and recover truncated replies after reconnecting. The Host cleans up Codex background processes more reliably. Desktop can preview files attached to messages. Self-hosted Servers avoid reporting normal disconnects during planned shutdowns as connection failures.
+- **HarmonyOS** · Updated sign-in, Host list, and conversation screens bring common workflows closer to Android.
+
+### 贡献者 / Contributors
+
+感谢本版贡献者及参与反馈和验证的朋友。Thanks to everyone who contributed changes, reported issues, or helped verify this release.
+
+- 平板布局与 Antigravity 修复 / Tablet layouts and Antigravity fixes · [@gcnyin](https://github.com/gcnyin)
+- Codex、移动端与贡献指南 / Codex, mobile fixes, and contributor guides · [@dreamfarer-space](https://github.com/dreamfarer-space)
+- WebSocket 帧上限与 DSH Web 测试 / WebSocket frame limits and DSH Web tests · [@vccddd](https://github.com/vccddd)
+- 自部署 Server 停机处理 / Self-hosted Server shutdown handling · [@luojiyin1987](https://github.com/luojiyin1987)
+- DSH Web、登录与 Desktop 附件 / DSH Web, sign-in, and Desktop attachments · [@liguobao](https://github.com/liguobao)
+
+## 0.6.6 — 2026-11-20
+
+Android versionCode 74 · iOS buildNumber floor 74
+
+### 中文
+
+- **iOS 与鸿蒙** · iOS 客户端代码已开源，与 Android 共享会话和消息功能，支持 iPad。原生鸿蒙客户端已合入主分支，支持 WebRTC 与加密中继、会话历史、流式消息和工作区浏览。
+- **移动端** · Android 和 iOS 可从主机详情试用主机上的原生 DSH Web，需同步升级 Remote Host，且服务器已启用该功能。会话忙碌时可排队发送或插话，也可以将已排队的消息插入当前对话。Android、iOS 和鸿蒙的设置页可查看会员状态，并改善主机列表、新建对话和 PDF 阅读体验。
+- **远程连接** · 移动端恢复直连优先，Android 和 iOS 可查看当前中继节点。改善 WebRTC 与中继切换，无 TURN 的自建服务可更快回落到中继。Desktop 可在支持的 Gateway 上并行准备直连和备用 TURN，Host 可尝试通过公网 IPv6 或 Tailscale IPv4 直连。
+- **ACP 与 Codex** · 支持接入自定义 stdio ACP 后端，扩展模式和权限选项。Antigravity 优先使用原生 ACP，保留旧适配器作为回退。改善 ACP 长会话历史、工作区文件引用和 Windows 上的后端启动，恢复 Claude ACP 一键安装。Codex 重连后可补齐流式回复，思考过程可折叠查看。
+- **Harness 与 Desktop** · 适配 DSH Desktop 0.2.2-rc.5，远程终端列表实时更新，原生工作区可按文件名或路径搜索。新增跨机器复制会话历史的 Host API，供客户端接入。对齐 DS-Bot 0.3.8 远程操作，并支持 Host 启用的官方思考过程翻译插件。
+- **稳定性** · 修复移动端会话列表冷启动崩溃、草稿恢复、截图上传、ACP 图片预览和流式回复重复显示。改善长会话历史加载并隐藏废弃空白会话，修复远程压缩取消或超时后阻塞后续请求，以及配对 Host 退出授权后无法登录的问题。
+
+### English
+
+- **iOS and HarmonyOS** · The iOS client is open source, shares session and messaging features with Android, and supports iPad. The native HarmonyOS client is now on the main branch, with WebRTC, encrypted Relay, session history, streaming, and workspace browsing.
+- **Mobile** · Android and iOS can try the Host’s native DSH Web from Host details. This requires an updated Remote Host and a Server with DSH Web enabled. Queue messages during a busy session or use a new or queued message to steer the active turn. Android, iOS, and HarmonyOS show membership status in Settings and improve the Host list, new conversation flow, and PDF viewer.
+- **Remote connections** · Mobile clients prefer direct connections again. Android and iOS show the active Relay node. Switching between WebRTC and Relay is more reliable, and self-hosted Servers without TURN fall back to Relay sooner. On supported Gateways, Desktop prepares direct and standby TURN connections in parallel. Hosts can attempt direct connections over public IPv6 or Tailscale IPv4.
+- **ACP and Codex** · Register custom stdio ACP backends and use expanded mode and permission controls. Antigravity prefers native ACP with the legacy adapter as a fallback. This release improves long ACP session history, workspace file mentions, and backend startup on Windows, and restores one-click Claude ACP installation. Codex fills in missing streamed updates after reconnecting and displays reasoning in collapsible blocks.
+- **Harness and Desktop** · Support DSH Desktop 0.2.2-rc.5 with live remote terminal lists and file search by name or path in native workspaces. New Host APIs let clients integrate cross-machine session history copying. Remote operations align with DS-Bot 0.3.8, and Remote supports the official reasoning translation plugin when enabled on the Host.
+- **Reliability** · Fix a mobile session-list crash on cold start, draft recovery, screenshot uploads, ACP image previews, and duplicate streamed replies. Improve long-session history loading and hide abandoned blank sessions. Fix remote compaction requests getting stuck after cancellation or timeout, and restore Host sign-in after logging out of device pairing.
+
+### 贡献者 / Contributors
+
+感谢 / Thanks to [@vccddd](https://github.com/vccddd), [@Mangoman2008](https://github.com/Mangoman2008), [@PYH0809](https://github.com/PYH0809), [@dreamfarer-space](https://github.com/dreamfarer-space), [@AIchanKimi](https://github.com/AIchanKimi), [@luojiyin1987](https://github.com/luojiyin1987), [@gcnyin](https://github.com/gcnyin), [@greatcorrectandglory](https://github.com/greatcorrectandglory), [@liguobao](https://github.com/liguobao)，以及所有提交问题、协助复现和参与验证的朋友。
+
+特别感谢 @vccddd 推进 iOS 与共享应用代码，@Mangoman2008 实现鸿蒙客户端，@PYH0809 改进传输升级与历史投影；也感谢其他贡献者对 ACP、Codex、上传与 Android 体验的持续修复。
+
+## 0.6.5 — 2026-11-15
 
 Android build 72.
 
@@ -19,6 +69,16 @@ Android build 72.
 - Support tracked asynchronous compaction, including recovery after reconnect and lifecycle-confirmed cancellation, without extending ordinary RPC deadlines.
 - Android: introduce coherent sheet and screen transitions with reduced-motion support.
 - Preserve DS Bot group replies in compact history while bounding projected payloads.
+- Align Host routes with DS-Bot 0.3.6; restore complete group replies after partial live caches and App restarts, and keep Bot forms usable with the keyboard and in short windows.
+- Keep Android Agent drafts editable offline, without sending or clearing them before reconnect. Improve drawer navigation, blank-conversation reuse, confirmation dialogs, chat appearance and code highlighting; add Russian, Ukrainian and DS-Bot settings translations.
+- Restore Android photo capture and support video/binary file selection. Accelerate eligible LAN binary uploads of at least 1 MiB through a separately authenticated Noise/TCP WebSocket, retaining existing paths elsewhere and never replaying started uploads.
+- Recover credential refresh and interrupted storage migration with a cross-process V2 queue; stop all Harness processes before upgrading or downgrading. See [integration and downgrade guidance](plugin-integration.md).
+- Fix Host control/Relay WebSocket Origin handling under dsh web; retain browser Origin checks. Add Host debug-log storage and an expandable settings drawer.
+- Update an npm-installed Remote from the local Desktop dialog when supported; GitHub/local installs retain the release link, and remote peers still cannot replace their owning Remote plugin.
+- Add the standalone, matching-version `ds-harness-remote-tui` bundle for Harness 0.2.2-rc.1. Real dsh-TUI 0.20.1 / Android 72 core cross-device acceptance passed on haru.
+- Accept valid absolute file paths through the trusted workspace alias while rejecting traversal and internal symlinks. Fix macOS temporary-path normalization in packed-runtime verification.
+- Keep TUI npm publishing failures from blocking subsequent GitHub Release / APK publication. Verify the final release with workspace production builds/checks/tests and packed GitHub/npm WebRTC fallback smokes.
+
 
 ### 中文
 
@@ -27,6 +87,40 @@ Android build 72.
 - 支持可追踪的异步压缩、断线恢复和经生命周期确认的取消，普通 RPC 超时保持不变。
 - Android：为 Sheet 和页面切换增加连续过渡，支持系统减少动态效果设置。
 - 保留压缩历史中的 DS Bot 群聊回复，同时限制投影载荷大小。
+- Host 路由对齐 DS-Bot 0.3.6；修复部分实时缓存覆盖完整群聊回复、重启后漏回复，以及 Bot 表单键盘遮挡和短窗口布局。
+- Android 离线仍可编辑 Agent 草稿，恢复连接前不发送、不清空。改进抽屉导航、空会话复用、确认弹窗、聊天排版配色和代码高亮；补充俄语、乌克兰语及 DS-Bot 设置翻译。
+- 恢复 Android 拍照入口，支持选择视频和二进制文件；至少 1 MiB 的合适 LAN 二进制上传可通过独立认证的 Noise/TCP WebSocket 加速，其他场景保持原路径，已开始的上传不换通道重放。
+- 使用跨进程 V2 队列恢复凭据刷新和中断存储迁移。升级或降级前必须停止所有 Harness 进程，详见[集成与降级指南](plugin-integration.md)。
+- 修复 dsh web 下 Host 控制/Relay WebSocket 的 Origin；保留浏览器校验。新增 Host 调试日志存储与设置中的可展开日志抽屉。
+- Harness 支持时，可从本机 Desktop 弹窗升级 npm 安装的 Remote；GitHub/本地安装保留发布页入口，远程连接仍不能替换拥有它的 Remote 插件。
+- 新增同版本独立 `ds-harness-remote-tui` 组合包，适用于 Harness 0.2.2-rc.1；真实 dsh-TUI 0.20.1 与 Android 72 在 haru 的核心跨设备验收通过。
+- 修复可信工作区别名下合法绝对路径误拒绝，继续拒绝越界与内部符号链接；修正 macOS 临时目录在打包运行时校验中的路径规范化。
+- TUI npm 发布失败不再阻断后续 GitHub Release / APK；最终版本通过全仓生产构建、类型检查、测试与 GitHub/npm 打包 WebRTC 回退冒烟。
+
+
+## 0.6.4 — 2026-11-08
+
+Android build 71.
+
+### English
+
+- Add DS Bot 0.3.0 conversations, groups, agent badges, settings subpages, schedules and desktop installation guidance.
+- Android: keep the chat input editable and preserve each conversation's local draft while the Host is unreachable; sending still requires a reconnected, user-triggered send.
+- Add offline session instant-open, cached reading while hosts are offline, direct workspace creation, host switching and connection diagnostics.
+- Improve pairing and sign-in with DSH-Go pairing, compact QR, editable server address, clearer account labels and responsive login layouts.
+- Fix session catalogue handling for oversized shared lists, corrupt identity recovery, reconnect behavior and delayed packets on destroyed links.
+- Add Windows Codex CLI discovery and recover lost self-hosted refresh responses without revoking valid credentials.
+- Normalize release bundle paths, add bilingual issue forms, and publish the repository license.
+
+### 中文
+
+- 新增 DS Bot 0.3.0 多会话、群聊、本地 Agent 标识、设置二级页、日程联动和电脑端安装指引。
+- Android：主机断线期间聊天输入框仍可编辑，并按会话保留本地草稿；恢复连接后仍需用户手动发送。
+- 新增离线会话秒开、主机离线缓存阅读、侧栏直接创建工作区、主机切换和连接诊断。
+- 改进 DSH-Go 配对、紧凑二维码、可编辑服务地址、设备账号标签和响应式登录布局。
+- 修复超大共享会话目录、损坏身份恢复、重连行为和已销毁链路延迟包处理问题。
+- 新增 Windows Codex CLI 发现，并在自部署 Server 丢失刷新响应时恢复有效凭据。
+- 统一发布 bundle 路径，新增中英文 Issue 表单并补充仓库许可证。
 
 ## 0.6.3 — 2026-11-05
 
@@ -682,7 +776,6 @@ The following entries retain the implementation and validation milestones record
 - Fixes Remote Web workspace image and Office preview responses by materializing Harness Gateway binary attachments on the Host and restoring them to `Uint8Array` in the client gateway.
 - Rebuilds the Plugin bundle and synchronizes the Android/Plugin release version.
 
-# Changelog
 
 ## 0.5.3 - 2026-10-11
 
@@ -1224,26 +1317,3 @@ Android could display plugin-injected model context as user conversation rows.
 `0.3.17` was withdrawn because its Client could forward `commands.list` and
 register the remote file provider against older Hosts without a compatibility
 fallback.
-## 0.6.4 — 2026-11-08
-
-Android build 71.
-
-### English
-
-- Add DS Bot 0.3.0 conversations, groups, agent badges, settings subpages, schedules and desktop installation guidance.
-- Android: keep the chat input editable and preserve each conversation's local draft while the Host is unreachable; sending still requires a reconnected, user-triggered send.
-- Add offline session instant-open, cached reading while hosts are offline, direct workspace creation, host switching and connection diagnostics.
-- Improve pairing and sign-in with DSH-Go pairing, compact QR, editable server address, clearer account labels and responsive login layouts.
-- Fix session catalogue handling for oversized shared lists, corrupt identity recovery, reconnect behavior and delayed packets on destroyed links.
-- Add Windows Codex CLI discovery and recover lost self-hosted refresh responses without revoking valid credentials.
-- Normalize release bundle paths, add bilingual issue forms, and publish the repository license.
-
-### 中文
-
-- 新增 DS Bot 0.3.0 多会话、群聊、本地 Agent 标识、设置二级页、日程联动和电脑端安装指引。
-- Android：主机断线期间聊天输入框仍可编辑，并按会话保留本地草稿；恢复连接后仍需用户手动发送。
-- 新增离线会话秒开、主机离线缓存阅读、侧栏直接创建工作区、主机切换和连接诊断。
-- 改进 DSH-Go 配对、紧凑二维码、可编辑服务地址、设备账号标签和响应式登录布局。
-- 修复超大共享会话目录、损坏身份恢复、重连行为和已销毁链路延迟包处理问题。
-- 新增 Windows Codex CLI 发现，并在自部署 Server 丢失刷新响应时恢复有效凭据。
-- 统一发布 bundle 路径，新增中英文 Issue 表单并补充仓库许可证。

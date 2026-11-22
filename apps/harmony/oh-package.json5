@@ -1,7 +1,7 @@
 {
   "modelVersion": "5.0.0",
   "name": "dsh-remote-harmony",
-  "version": "0.6.5",
+  "version": "0.6.7",
   "description": "DeepSeek Harness Remote for HarmonyOS NEXT",
   "dependencies": {}
 }

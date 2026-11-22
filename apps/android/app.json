@@ -3,18 +3,13 @@
     "name": "DSH Remote",
     "slug": "dsh-remote",
     "scheme": "dshremote",
-    "version": "0.6.5",
+    "version": "0.6.7",
     "orientation": "default",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "automatic",
-    "ios": {
-      "supportsTablet": true,
-      "bundleIdentifier": "io.github.liguobao.dshremote",
-      "buildNumber": "72"
-    },
     "android": {
       "package": "io.github.liguobao.dshremote",
-      "versionCode": 72,
+      "versionCode": 75,
       "softwareKeyboardLayoutMode": "resize",
       "permissions": [
         "android.permission.REQUEST_INSTALL_PACKAGES",
@@ -69,7 +64,9 @@
               "zh-TW",
               "es-ES",
               "de-DE",
-              "fr-FR"
+              "fr-FR",
+              "ru-RU",
+              "uk-UA"
             ]
           }
         }

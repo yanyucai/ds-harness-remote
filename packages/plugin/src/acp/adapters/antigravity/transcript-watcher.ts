@@ -2,11 +2,15 @@ import { promises as fs } from 'node:fs'
 import { join } from 'node:path'
 import { EventEmitter } from 'node:events'
 import { homedir } from 'node:os'
+import { StringDecoder } from 'node:string_decoder'
 import type { AntigravityEvents, StepLogRecord } from './types.js'
 
 export class TranscriptWatcher extends EventEmitter {
   private offset = 0
   private lineRemainder = ''
+  private decoder = new StringDecoder('utf8')
+  private readTail = Promise.resolve()
+  private readQueued = false
   private pollTimer?: NodeJS.Timeout
   private closed = false
   private readonly transcriptPath: string
@@ -37,12 +41,12 @@ export class TranscriptWatcher extends EventEmitter {
     if (this.closed) return
     const poll = async () => {
       try {
-        await this.readNewLines()
+        await this.flush()
       } catch {
         // 文件可能尚未创建或临时锁占用，静默重试
       }
       if (!this.closed) {
-        this.pollTimer = setTimeout(poll, intervalMs)
+        this.pollTimer = setTimeout(() => { void poll() }, intervalMs)
         this.pollTimer.unref?.()
       }
     }
@@ -55,13 +59,38 @@ export class TranscriptWatcher extends EventEmitter {
       clearTimeout(this.pollTimer)
       this.pollTimer = undefined
     }
+    this.resetDecoder()
+  }
+
+  /**
+   * 重置读取偏移与解码器状态
+   */
+  reset(): void {
+    this.offset = 0
+    this.resetDecoder()
+  }
+
+  private resetDecoder(): void {
+    this.lineRemainder = ''
+    this.decoder.end()
+    this.decoder = new StringDecoder('utf8')
   }
 
   /**
    * 立即触发一次读取（同步/主动检查）
    */
-  async flush(): Promise<void> {
-    await this.readNewLines()
+  flush(): Promise<void> {
+    if (this.closed) return Promise.resolve()
+    // Polling and stdout can both request a read. Keep one reader and
+    // coalesce arrivals during that read into a single follow-up.
+    if (!this.readQueued) {
+      this.readQueued = true
+      this.readTail = this.readTail.catch(() => undefined).then(async () => {
+        this.readQueued = false
+        if (!this.closed) await this.readNewLines()
+      })
+    }
+    return this.readTail
   }
 
   private async readNewLines(): Promise<void> {
@@ -79,13 +108,15 @@ export class TranscriptWatcher extends EventEmitter {
       const bytesToRead = stat.size - this.offset
       const buffer = Buffer.alloc(bytesToRead)
       const { bytesRead } = await handle.read(buffer, 0, bytesToRead, this.offset)
+      if (this.closed || bytesRead === 0) return
       this.offset += bytesRead
 
-      const text = this.lineRemainder + buffer.subarray(0, bytesRead).toString('utf-8')
+      const text = this.lineRemainder + this.decoder.write(buffer.subarray(0, bytesRead))
       const lines = text.split('\n')
       this.lineRemainder = lines.pop() ?? ''
 
       for (const line of lines) {
+        if (this.closed) return
         const trimmed = line.trim()
         if (!trimmed) continue
         await this.parseAndDispatch(trimmed)

@@ -32,7 +32,7 @@ export const DEFAULT_ACP_IDES: readonly AcpIdeConfig[] = [
   { id: 'pi', command: 'pi-acp', args: [] },
   { id: 'cursor', command: 'agent', args: ['acp'] },
   { id: 'kimi', command: 'kimi', args: ['acp'] },
-  { id: 'antigravity', command: 'agy', args: ['--input-format', 'stream-json', '--output-format', 'stream-json'] },
+  { id: 'antigravity', command: 'agy', args: ['acp'] },
 ]
 
 /** JSON-RPC stdio bridge for ACP agents (Cursor/Kimi/Antigravity). Codex is not an ACP backend; it uses the codex.app.* App Server protocol. */
@@ -41,7 +41,7 @@ export class StdioAcpAdapter {
   private child?: ChildProcessWithoutNullStreams
   private nextId = 1
   constructor(private readonly config: AcpIdeConfig) { this.backend = config.id }
-  private ensure() { if (!this.child) this.child = spawn(this.config.command, this.config.args ?? [], { cwd: this.config.cwd, stdio: 'pipe' }); return this.child }
+  private ensure() { if (!this.child) this.child = spawn(this.config.command, this.config.args ?? [], { cwd: this.config.cwd, stdio: 'pipe', windowsHide: true }); return this.child }
   async initialize(params: AcpInitializeParams): Promise<AcpInitializeResult> { await this.call('initialize', params); return { protocolVersion: 1, capability: 'agent.acp.v1', backend: this.backend, capabilities: ['session.new','session.load','session.prompt','session.cancel'] } }
   async sessionNew(params: AcpSessionParams) { const r = await this.call('session/new', params) as { sessionId?: string }; if (!r.sessionId) throw new Error('INVALID_MESSAGE'); return { sessionId: r.sessionId } }
   async sessionLoad(params: AcpSessionParams) { const r = await this.call('session/load', params) as { sessionId?: string }; if (!r.sessionId) throw new Error('INVALID_MESSAGE'); return { sessionId: r.sessionId } }
@@ -50,5 +50,44 @@ export class StdioAcpAdapter {
   async setMode(p: AcpSetModeParams) { await this.call('session/set_mode', p) }
   async respondPermission(p: AcpPermissionResponseParams) { await this.call('session/request_permission', p) }
   async close() { this.child?.kill(); this.child = undefined }
-  private call(method: string, params: unknown, onNotification?: (n: unknown) => Promise<void>): Promise<unknown> { const c = this.ensure(); const id = this.nextId++; c.stdin.write(JSON.stringify({ jsonrpc:'2.0', id, method, params })+'\n'); return new Promise((resolve,reject)=>{ let buf=''; const onData=async (d: Buffer)=>{ buf+=d; const lines=buf.split('\n'); buf=lines.pop()??''; for(const l of lines){ try { const m=JSON.parse(l); if(m.id===id) { c.stdout.off('data',onData); m.error?reject(new Error(m.error.message??'ACP error')):resolve(m.result) } else if(m.method&&onNotification) await onNotification(m.params) } catch {} } }; c.stdout.on('data',onData); c.once('error',reject) }) }
+  private call(method: string, params: unknown, onNotification?: (n: unknown) => Promise<void>): Promise<unknown> {
+    const c = this.ensure()
+    const id = this.nextId++
+    c.stdin.write(JSON.stringify({ jsonrpc: '2.0', id, method, params }) + '\n')
+    return new Promise((resolve, reject) => {
+      let buf = ''
+      let settled = false
+      let chain = Promise.resolve()
+      const finish = (err?: Error, result?: unknown) => {
+        if (settled) return
+        settled = true
+        c.stdout.off('data', onData)
+        c.off('error', onError)
+        if (err) reject(err)
+        else resolve(result)
+      }
+      const onError = (err: Error) => { finish(err) }
+      const onData = (d: Buffer) => {
+        buf += d
+        const lines = buf.split('\n')
+        buf = lines.pop() ?? ''
+        chain = chain.then(async () => {
+          for (const l of lines) {
+            if (settled) return
+            try {
+              const m = JSON.parse(l)
+              if (m.id === id) {
+                finish(m.error ? new Error(m.error.message ?? 'ACP error') : undefined, m.result)
+                return
+              } else if (m.method && onNotification) {
+                await onNotification(m.params)
+              }
+            } catch {}
+          }
+        }).catch(() => undefined)
+      }
+      c.stdout.on('data', onData)
+      c.once('error', onError)
+    })
+  }
 }

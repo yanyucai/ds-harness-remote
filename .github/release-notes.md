@@ -1,89 +1,35 @@
+# v0.6.7
+
+Android versionCode **75** · iOS buildNumber floor **75**
+
 ## 中文
 
-**v0.6.4 · Android build 71**
-
-### Android 与 DS Bot
-
-- 对齐 DS Bot 0.3.0，支持多会话分段、本地 Agent 标识、队列过滤和关闭状态留存。
-- 新增 DS Bot 详情页、浏览器页、13 项全局设置、设置子页与日程联动。
-- 新增 Bot 会话、群聊、成员管理和引用对话，未安装 DS Bot 时显示电脑端安装指引。
-- 支持离线会话秒开、主机离线时读取缓存历史、会话抽屉直接创建工作区和远程主机切换。
-- 改进 Codex 会话标题、空会话重连提示、聊天活动展示、侧栏导航和工作区层级。
-- 新增设备发现诊断日志、连接日志导出、错误横幅和设置诊断页。
-- 支持按偏好选择 LAN、P2P、TURN 和 Relay 传输，并补齐传输说明与图标。
-
-### 配对与登录
-
-- 新增 DSH-Go Host 单次配对流程，并将配对入口整合到登录页签。
-- 新增紧凑配对二维码、倒计时和取消操作，优化扫码指引与按钮布局。
-- 支持编辑服务地址，改进账号标签、密码提示和非 DeepSeek 账号说明。
-- 完成 Host-only 登录流程，移除不必要的 provider 重试。
-
-### 稳定性与恢复
-
-- 超大会话目录先按 workspace 和 subagent 过滤并限制行数，避免 Remote 列表整体失败。
-- 修复损坏身份、旧凭据目录迁移、重置恢复和并发创建身份时的边界问题。
-- 修复控制连接重连、已销毁链路延迟包限流和 WebSocket hello 超时处理。
-- 自部署 Server 在刷新成功响应丢失时恢复后继凭据，不撤销仍有效的账号授权。
-- 修复会话图片跨版本加载、空会话图标和文件预览授权边界。
-
-### 工具与兼容性
-
-- 新增 Windows Codex Desktop CLI 发现。
-- 继续兼容 Harness 0.2.2-rc.1 与 0.2.1-rc.5，补齐 Remote 会话、附件和事件帧兼容处理。
-- 修复 Harness 0.2.2 owner Peer 缺失导致的事件流重连循环。
-- 升级 werift 至 0.26.0，改进 WebRTC、TURN 和 Relay 回退行为。
-
-### Server 与发布工程
-
-- 自部署 Server 支持可选 LAN/P2P/TURN 信令协调、短期 coturn 凭据、反向代理 IP 限流和握手诊断。
-- 支持行内修改设备名称、登录后跳转、前端路由刷新和 HTML 入口缓存重新校验。
-- Host bundle 内联运行时依赖，改善本地 link、手工复制和生成式安装。
-- 统一发布 bundle 路径，新增中英文 Issue 表单与仓库许可证。
-
-感谢 @dreamfarer-space、@bluesmilery、@ltmroberthk915、@jinnian0703、@joeatgp，以及所有参与评审、测试、反馈问题和改进文档的贡献者。
+- **DSH Web** · 可从主机详情经局域网打开主机上的 DSH Web，支持经验证的同链路 IPv6。Host 找不到可用的本机监听地址时，支持隧道的客户端可继续通过隧道打开。隧道的 WebSocket 单帧上限提高到 16 MiB。
+- **登录与移动端** · 密码登录支持输入二次验证码或恢复码。Android 和 iOS 改善了平板抽屉、弹窗和 Antigravity 的权限选项、历史图片回放及命令菜单。
+- **会话与连接** · Codex 会话重连后可恢复消息流并补齐截断的回复，Host 更可靠地清理 Codex 后台进程。Desktop 支持预览消息中的文件附件。自部署 Server 在计划停机时可避免将正常断开报为连接失败。
+- **鸿蒙** · 更新登录、主机列表和会话页面，使常用操作与 Android 更一致。
 
 ## English
 
-**v0.6.4 · Android build 71**
+- **DSH Web** · Open the Host’s DSH Web from Host details over the LAN, including verified same-link IPv6. If the Host has no usable local listening address, clients with tunnel support can open it through the tunnel. The tunnel now supports WebSocket frames up to 16 MiB.
+- **Sign-in and mobile** · Password sign-in accepts two-factor verification and recovery codes. Android and iOS improve tablet drawers and dialogs, along with Antigravity permission choices, historical image rendering, and command menus.
+- **Sessions and connections** · Codex sessions resume streaming and recover truncated replies after reconnecting. The Host cleans up Codex background processes more reliably. Desktop can preview files attached to messages. Self-hosted Servers avoid reporting normal disconnects during planned shutdowns as connection failures.
+- **HarmonyOS** · Updated sign-in, Host list, and conversation screens bring common workflows closer to Android.
 
-### Android and DS Bot
+## 升级说明 / Upgrade notes
 
-- Align with DS Bot 0.3.0 with segmented multi-session views, local Agent badges, queue filtering and retained closed states.
-- Add DS Bot profile and browser pages, 13 global settings, settings subpages and schedule integration.
-- Add Bot conversations, group chats, member management and referenced conversations, with desktop installation guidance when DS Bot is unavailable.
-- Add offline session instant-open, cached history while a Host is offline, direct workspace creation from the session drawer and remote Host switching.
-- Refine Codex titles, empty-session reconnect prompts, chat activity, sidebar navigation and workspace hierarchy.
-- Add device discovery diagnostics, connection-log export, error banners and a diagnostics settings page.
-- Support LAN, P2P, TURN and Relay transport preferences with clearer copy and icons.
+建议将客户端和 Remote Host 一同升级到 0.6.7。Host 需要 Node.js >=24.9。升级或降级前，请停止所有 Harness 进程并备份 profile 和凭据。[集成指南](https://github.com/liguobao/ds-harness-remote/blob/main/docs/plugin-integration.md)
 
-### Pairing and sign-in
+Upgrade the client and Remote Host together. The Host requires Node.js >=24.9. Stop all Harness processes and back up profiles and credentials before upgrading or downgrading.
 
-- Add the single-attempt DSH-Go Host pairing flow and integrate pairing into sign-in tabs.
-- Add compact pairing QR, countdown and cancel actions, with improved scan guidance and controls.
-- Allow editing the service address and improve account labels, password hints and non-DeepSeek account guidance.
-- Complete the Host-only sign-in flow and remove unnecessary provider retries.
+iOS 通过 Xcode Cloud 签名与分发。GitHub Release 提供的鸿蒙 HAP 需要签名后安装到真机。[鸿蒙客户端说明](https://github.com/liguobao/ds-harness-remote/blob/main/docs/harmony-client.md)
 
-### Stability and recovery
+## 贡献者 / Contributors
 
-- Filter oversized session catalogues by workspace and subagent before applying row limits, preventing complete Remote list failures.
-- Fix corrupt identity handling, legacy credential migration, reset recovery and concurrent identity creation.
-- Fix control reconnects, rate limiting of delayed packets on destroyed links and WebSocket hello timeout handling.
-- Recover successor credentials when a self-hosted Server loses a successful refresh response without revoking still-valid account authorization.
-- Fix cross-version session image loading, empty-session icons and file-preview authorization boundaries.
+感谢本版贡献者及参与反馈和验证的朋友。Thanks to everyone who contributed changes, reported issues, or helped verify this release.
 
-### Tools and compatibility
-
-- Discover the Windows Codex Desktop CLI.
-- Maintain Harness 0.2.2-rc.1 and 0.2.1-rc.5 compatibility, including Remote session, attachment and event-frame handling.
-- Fix the Harness 0.2.2 reconnect loop caused by a missing owner Peer on forwarded event streams.
-- Upgrade werift to 0.26.0 and improve WebRTC, TURN and Relay fallback behavior.
-
-### Server and release engineering
-
-- Add optional LAN/P2P/TURN signaling, short-lived coturn credentials, reverse-proxy client-IP rate limits and handshake diagnostics to the self-hosted Server.
-- Add inline device renaming, post-login redirects, frontend route refresh support and HTML entry cache revalidation.
-- Inline Host bundle runtime dependencies for local links, manual copies and generated installations.
-- Normalize release bundle paths and add bilingual issue forms and the repository license.
-
-Thanks to @dreamfarer-space, @bluesmilery, @ltmroberthk915, @jinnian0703, @joeatgp, and everyone who contributed through reviews, testing, issue reports and documentation improvements.
+- 平板布局与 Antigravity 修复 / Tablet layouts and Antigravity fixes · [@gcnyin](https://github.com/gcnyin)
+- Codex、移动端与贡献指南 / Codex, mobile fixes, and contributor guides · [@dreamfarer-space](https://github.com/dreamfarer-space)
+- WebSocket 帧上限与 DSH Web 测试 / WebSocket frame limits and DSH Web tests · [@vccddd](https://github.com/vccddd)
+- 自部署 Server 停机处理 / Self-hosted Server shutdown handling · [@luojiyin1987](https://github.com/luojiyin1987)
+- DSH Web、登录与 Desktop 附件 / DSH Web, sign-in, and Desktop attachments · [@liguobao](https://github.com/liguobao)

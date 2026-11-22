@@ -1,5 +1,5 @@
 /** Mirrors the runtime's JSON input for actions that carry a single field. */
-export interface ActionInput { uri?: string; size?: number; id?: string; mode?: string; backend?: string; rating?: string; name?: string; text?: string; offset?: number; enabled?: boolean }
+export interface ActionInput { uri?: string; size?: number; id?: string; mode?: string; backend?: string; rating?: string; name?: string; text?: string; offset?: number; enabled?: boolean; code?: string; challenge?: string }
 export interface ActivityRow { id: string; category: string; title: string; detail: string; status: string; session: string }
 export interface JobRow { id: string; label: string; status: string; progress?: string; detail?: string; startedAt?: number; finishedAt?: number }
 export interface ActivityState { rows: ActivityRow[]; jobs: JobRow[]; loading: boolean; error: string; output: string; outputJob: string; lossy: boolean }
@@ -79,6 +79,7 @@ export interface ViewState {
   resumeSessionEnabled: boolean; readingPosition: ReadingPosition;
   sessionKey: string; view: string; server: string; account: string; busy: boolean; connected: boolean;
   status: string; error: string; notice: string; running: boolean; hasMore: boolean;
+  twoFactorRequired: boolean;
   qrUrl: string; candidate: Candidate; devices: DeviceRow[]; workspaces: CatalogRow[];
   sessions: CatalogRow[]; title: string; rows: TimelineRow[]; models: ModelRow[];
   modelWarning: string; selectedModel: string;
@@ -91,6 +92,8 @@ export interface ViewState {
   uploadMaxBytes: number
   compactHistory: boolean; children: CatalogRow[]; info: InfoRow[];
   languagePreference: string; themePreference: string; chatAppearance: string; accentColor: string; activityDockMode: string; typographyDensity: string;
+  busySendMode: string; membershipStatus: string; membershipExpiresAt: string;
+  dshWebAvailable: boolean; dshWebTunnelAvailable: boolean; dshWebUrl: string; dshWebGrant: string; dshWebExpiresAt: number; dshWebLan: boolean;
   notificationsEnabled: boolean;
   transportPreference: string;
   plugins: PluginRow[]; settingsWritable: boolean;
@@ -101,6 +104,7 @@ export interface ViewState {
   bots: BotEntryRow[];
   networkSections: NetworkSection[];
   prompts: PromptRow[]; sessionBlank: boolean; currentMode: string; workspaceOptions: CatalogRow[];
+  currentSessionId: string; sessionArchived: boolean; canArchiveSession: boolean;
   recovering: boolean; canReconnect: boolean; sessionBackend: string; autoConnectName: string;
   hostName: string;
 }
@@ -119,6 +123,7 @@ export function emptyState(): ViewState {
     resumeSessionEnabled: false, readingPosition: { key: '', offset: 0, atBottom: true },
     sessionKey: '', view: 'login', server: 'https://dsh.r2049.cn', account: '', busy: true, connected: false,
     status: '初始化安全存储', error: '', notice: '', running: false, hasMore: false, qrUrl: '',
+    twoFactorRequired: false,
     candidate: { id: '', name: '', fingerprint: '', trusted: false, online: false }, devices: [], workspaces: [],
     sessions: [], title: 'DSH Remote', rows: [], models: [], modelWarning: '', selectedModel: '',
     backends: [], backend: 'harness', overview: [], workspaceOverview: [], groupBy: 'workspace', orderBy: 'updated',
@@ -130,6 +135,8 @@ export function emptyState(): ViewState {
     },
     compactionStatus: '', compactionCancellable: false, uploadProgress: '', uploadMaxBytes: 20 * 1024 * 1024, compactHistory: false, children: [], info: [],
     languagePreference: 'zh-CN', themePreference: 'system', chatAppearance: '{}', accentColor: '#4D6BFE', activityDockMode: 'compact', typographyDensity: 'compact',
+    busySendMode: 'queue', membershipStatus: 'loading', membershipExpiresAt: '',
+    dshWebAvailable: false, dshWebTunnelAvailable: false, dshWebUrl: '', dshWebGrant: '', dshWebExpiresAt: 0, dshWebLan: false,
     notificationsEnabled: true,
     transportPreference: 'auto',
     plugins: [], settingsWritable: false, form: [], formTitle: '', formResettable: false,
@@ -139,6 +146,7 @@ export function emptyState(): ViewState {
     bots: [],
     networkSections: [],
     sessionBlank: false, currentMode: '', workspaceOptions: [],
+    currentSessionId: '', sessionArchived: false, canArchiveSession: false,
     recovering: false, canReconnect: false, sessionBackend: 'harness', autoConnectName: ''
     , hostName: ''
   }

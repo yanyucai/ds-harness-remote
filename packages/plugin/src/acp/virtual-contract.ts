@@ -1,5 +1,8 @@
 import type {
+  AcpAvailableCommand,
+  AcpContextUsage,
   AcpSessionModels,
+  AcpSessionModes,
   AgentAcpFrameData,
   AgentAcpStreamClosedData,
   AgentAcpStreamOpenParams,
@@ -15,7 +18,7 @@ const ACP_SESSION_PREFIX = 'acp:'
 
 const OPENCODE_SESSION_PREFIX = 'opencode:'
 
-const SESSION_PREFIXES: Record<AcpCatalogBackend, string> = {
+const SESSION_PREFIXES: Record<string, string> = {
   cursor: CURSOR_SESSION_PREFIX,
   antigravity: ACP_SESSION_PREFIX,
   pi: 'pi:',
@@ -45,6 +48,12 @@ export function piPromptOutcome(kind: string, update: JsonRecord): PiTurnOutcome
   return { kind: 'completed' }
 }
 
+export interface AcpTodoItem {
+  content: string
+  status: 'pending' | 'in_progress' | 'completed'
+  priority?: string
+}
+
 export interface AcpSessionState {
   sessionId: string
   acpSessionId: string
@@ -56,8 +65,14 @@ export interface AcpSessionState {
   staleHistory?: boolean
   blank: boolean
   running: boolean
+  projectionSeq?: number
   createdAt: number
   updatedAt: number
+  agentPreset?: string
+  modes?: AcpSessionModes
+  availableCommands?: AcpAvailableCommand[]
+  todos?: AcpTodoItem[]
+  contextUsage?: AcpContextUsage
   events: Array<{ type: 'event'; event: NativeEvent }>
 }
 
@@ -80,6 +95,8 @@ export interface FollowState {
   sessionId: string
   acpSessionId: string
   queue: AsyncValueQueue
+  hasConsumer: boolean
+  closed?: boolean
   nextSeq: number
   turn: number
   stepOpen: boolean
@@ -89,6 +106,7 @@ export interface FollowState {
   assistantStreamRevision: number
   assistantAttempt?: AssistantStreamAttempt
   accumulatedText: string
+  accumulatedReasoning?: string
   activeToolCalls: Set<string>
   piToolOutputs: Map<string, { text: string; overflow: boolean }>
   piToolCalls: Map<string, { name: string; input?: unknown }>
@@ -109,6 +127,16 @@ export interface AcpClientLike {
   onSessionArchived?(handler: (data: { backend: 'opencode'; sessionId: string; archived: true }) => void): () => void
   sessionModels?(sessionId: string, backend: AcpCatalogBackend, signal?: AbortSignal): Promise<AcpSessionModels>
   selectModel?(sessionId: string, backend: AcpCatalogBackend, selection: AcpModelSelection, signal?: AbortSignal): Promise<AcpModelSelection>
+  sessionModes?(sessionId: string, backend: AcpCatalogBackend, signal?: AbortSignal): Promise<AcpSessionModes>
+  setMode?(sessionId: string, backend: AcpCatalogBackend, modeId: string, signal?: AbortSignal): Promise<{ currentModeId?: string }>
+  sessionCommands?(sessionId: string, backend: AcpCatalogBackend, signal?: AbortSignal): Promise<AcpAvailableCommand[]>
+  forkSession?(sessionId: string, backend: AcpCatalogBackend, signal?: AbortSignal): Promise<{ sessionId: string }>
+  createWorkspace?(path: string, backend: AcpCatalogBackend, title?: string, signal?: AbortSignal): Promise<{ path: string; title?: string }>
+  renameWorkspace?(path: string, backend: AcpCatalogBackend, title: string, signal?: AbortSignal): Promise<{ path: string; title?: string }>
+  deleteWorkspace?(path: string, backend: AcpCatalogBackend, signal?: AbortSignal): Promise<void>
+  reorderWorkspaces?(backend: AcpCatalogBackend, paths: string[], signal?: AbortSignal): Promise<string[]>
+  pinSession?(sessionId: string, backend: AcpCatalogBackend, signal?: AbortSignal): Promise<string[]>
+  unpinSession?(sessionId: string, backend: AcpCatalogBackend, signal?: AbortSignal): Promise<string[]>
   selectPermission?(sessionId: string, backend: AcpCatalogBackend, preset: string, signal?: AbortSignal): Promise<unknown>
   workspaceToolCall?(sessionId: string, backend: AcpCatalogBackend, endpoint: typeof ACP_TOOL_CALL_ENDPOINTS[number], args: JsonRecord, signal?: AbortSignal): Promise<unknown>
   createSession(
@@ -121,8 +149,9 @@ export interface AcpClientLike {
   cancel(sessionId: string, signal?: AbortSignal): Promise<unknown>
   listDirectory(path: string, signal?: AbortSignal): Promise<unknown>
   listWorkspaces?(backend?: string, signal?: AbortSignal): Promise<Array<{ path: string; title?: string; sessionCount?: number }>>
-  listSessions?(path: string, backend?: string, limit?: number, signal?: AbortSignal): Promise<Array<{ conversationId: string; title: string; createdAt: number; updatedAt: number }>>
+  listSessions?(path: string, backend?: string, limit?: number, signal?: AbortSignal): Promise<Array<{ conversationId: string; title: string; createdAt: number; updatedAt: number; pinned?: boolean }>>
   loadSessionHistory?(sessionId: string, backend?: string, signal?: AbortSignal): Promise<unknown[]>
+  loadSessionDetails?(sessionId: string, backend?: string, signal?: AbortSignal): Promise<{ events: unknown[]; modes?: AcpSessionModes; availableCommands?: AcpAvailableCommand[]; permissionPreset?: string }>
   openStream(
     sessionId: string,
     onFrame: (frame: AgentAcpFrameData) => void,
@@ -185,7 +214,7 @@ export function extractSessionId(request: JsonRecord): string {
 }
 
 export function sessionPrefix(backend: AcpCatalogBackend): string {
-  return SESSION_PREFIXES[backend] ?? CURSOR_SESSION_PREFIX
+  return SESSION_PREFIXES[backend] ?? `${backend}:`
 }
 
 export function nativeAcpId(sessionId: string, backend: AcpCatalogBackend): string {

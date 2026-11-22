@@ -1,6 +1,6 @@
 <!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'none'; img-src data:; base-uri 'none'; form-action 'none'"><script>window.ReactNativeWebView={postMessage:function(raw){if(window.top===window&&window.dshNative)window.dshNative.post(raw)}};for(const n of ['log','warn','error','info','debug'])console[n]=function(){};window.open=function(){return null}</script><style>body{margin:8px;font:15px/1.5 system-ui;color:#888;background:transparent}section{margin:8px 0}label,small{display:block}button,input{min-height:40px;margin:4px;max-width:95%}button{border:1px solid #8885;border-radius:8px;padding:6px 12px;color:inherit;background:#8881}input{color:inherit;background:#8881;border:1px solid #8885}table{border-collapse:collapse;display:block;overflow:auto}td,th{border:1px solid #8885;padding:6px}.row{display:flex;flex-wrap:wrap;gap:8px}a{color:var(--accent,#4b78e6)}svg{width:100%}p{white-space:pre-wrap}#error{color:#c64b43}</style></head><body><main id="body"></main><script>"use strict";
 (() => {
-  // ../android/src/vendor/ds-bot/formula.js
+  // ../../packages/app-core/src/vendor/ds-bot/formula.js
   var FUNCTIONS = {
     min: { args: [1, Infinity], run: (...values) => Math.min(...values.map(num)) },
     max: { args: [1, Infinity], run: (...values) => Math.max(...values.map(num)) },
@@ -281,7 +281,7 @@
     }
   }
 
-  // ../android/src/vendor/ds-bot/views.js
+  // ../../packages/app-core/src/vendor/ds-bot/views.js
   var LAYOUT = ["stack", "row"];
   var DISPLAY = ["text", "metric", "table", "chart", "progress", "callout", "sources", "html"];
   var INPUT_TYPES = ["slider", "choice", "toggle", "number"];
@@ -826,7 +826,7 @@
     return { fields };
   }
 
-  // ../android/src/services/bot-view.ts
+  // ../../packages/app-core/src/services/bot-view.ts
   function checkedBotView(pending2) {
     const stack = [{ value: pending2.view, depth: 0 }];
     let count = 0;

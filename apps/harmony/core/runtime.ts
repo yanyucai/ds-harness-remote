@@ -1,78 +1,83 @@
 import { botSettingsRows } from './bot-settings'
 import { imageInputLimits, validateImageInput } from './image-input'
-import { isTextFile, isValidUtf8Text, MAX_SINGLE_FILE_BYTES, MAX_TOTAL_FILES_BYTES, workspaceUploadMaxBytes, formatUploadedFilesReferencePrompt, type RpcCaller } from '../../android/src/screens/chat-files'
+import { isTextFile, isValidUtf8Text, MAX_SINGLE_FILE_BYTES, MAX_TOTAL_FILES_BYTES, workspaceUploadMaxBytes, formatUploadedFilesReferencePrompt, type RpcCaller } from '../../../packages/app-core/src/screens/chat-files'
 import { sha256 } from '@noble/hashes/sha256'
 import { generateKeyPair, identityFingerprint, fromBase64Url } from '@dsh-remote/crypto'
-import { deviceTokenPairSchema, type DeviceTokenPair } from '@dsh-remote/protocol'
-import { AndroidRemoteConnection } from '../../android/src/services/connection'
-import { RemoteServerApi } from '../../android/src/services/api'
-import { normalizeServerUrl } from '../../android/src/lib/server-url'
-import { resolveStartupAutoConnect } from '../../android/src/lib/auto-connect'
-import { ForegroundConnectionRecovery } from '../../android/src/services/connection-recovery'
+import { deviceTokenPairSchema, dshWebGrantSchema, dshWebLanGrantSchema, type DeviceTokenPair, type DshWebGrant } from '@dsh-remote/protocol'
+import { AndroidRemoteConnection } from '../../../packages/app-core/src/services/connection'
+import { AccountTwoFactorRequired, RemoteServerApi } from '../../../packages/app-core/src/services/api'
+import { normalizeServerUrl } from '../../../packages/app-core/src/lib/server-url'
+import { resolveStartupAutoConnect } from '../../../packages/app-core/src/lib/auto-connect'
+import { ForegroundConnectionRecovery } from '../../../packages/app-core/src/services/connection-recovery'
 import { startResidentTask, stopResidentTask, residentTaskActive, residentTaskError, observeResidentTask, openAppPowerManagementPage } from './background'
 import { TaskNotifications, activeTask, type ObservedTask } from './notification-state'
 import { setCompactionOwner, compactionStore } from './compaction-store'
 import { DownloadTask } from './download-task'
 import { latestRelease, HARMONY_VERSION, RELEASE_URL } from './releases'
-import { parseRelayRange } from '../../android/src/screens/bot/replies'
-import { pollRoomRows } from '../../android/src/services/bot-room-rows'
-import { botMessageClock } from '../../android/src/screens/bot/clock'
-import { heartbeatMessageBody } from '../../android/src/ui/heartbeat-message'
+import { parseRelayRange } from '../../../packages/app-core/src/screens/bot/replies'
+import { pollRoomRows } from '../../../packages/app-core/src/services/bot-room-rows'
+import { botMessageClock } from '../../../packages/app-core/src/screens/bot/clock'
+import { heartbeatMessageBody } from '../../../packages/app-core/src/ui/heartbeat-message'
 import { HarmonyBrowseMemory, type ReadingPosition } from './browse-memory'
 import { translateNative } from './localization'
-import { isCodexPermissionPreset, withCodexPermission, codexPermissionPreset } from '../../android/src/services/codex'
+import { isCodexPermissionPreset, withCodexPermission, codexPermissionPreset } from '../../../packages/app-core/src/services/codex'
 import { uploadFile, uploadNativeFile } from './file-transfer'
 import { copyText, shareText, setStatusBarVisible, clearBrowsePreferences } from './platform.js'
-import { checkedBotView } from '../../android/src/services/bot-view'
-import { validateViewAnswer } from '../../android/src/vendor/ds-bot/views.js'
+import { checkedBotView } from '../../../packages/app-core/src/services/bot-view'
+import { validateViewAnswer } from '../../../packages/app-core/src/vendor/ds-bot/views.js'
 import { SessionActivity } from './session-activity'
 import { attachRtcBridge, receiveRtcBridge } from './rtc-bridge'
-import { createChatImageLoader, chatImageAttachmentReference } from '../../android/src/services/chat-image-loader'
-import type { ChatImage } from '../../android/src/types'
-import { botMessageRequest, objects as botObjects, object as botObject, BOT_OPERATIONS, canDeleteBot, type BotOperation, type BotState } from '../../android/src/services/bot-catalog'
-import { loadHermesCatalog } from '../../android/src/services/hermes'
-import { createHermesSession, createHermesWorkspace, createPiWorkspace, createClaudeWorkspace, createAntigravityWorkspace, createOpencodeWorkspace } from '../../android/src/services/cursor'
-import { createCodexWorkspace } from '../../android/src/services/codex'
+import { createChatImageLoader, chatImageAttachmentReference } from '../../../packages/app-core/src/services/chat-image-loader'
+import type { ChatImage } from '../../../packages/app-core/src/types'
+import { botMessageRequest, objects as botObjects, object as botObject, BOT_OPERATIONS, canDeleteBot, type BotOperation, type BotState } from '../../../packages/app-core/src/services/bot-catalog'
+import { loadHermesCatalog } from '../../../packages/app-core/src/services/hermes'
+import { createHermesSession, createHermesWorkspace, createPiWorkspace, createClaudeWorkspace, createAntigravityWorkspace, createOpencodeWorkspace } from '../../../packages/app-core/src/services/cursor'
+import { createCodexWorkspace } from '../../../packages/app-core/src/services/codex'
 import type { ScheduleRecord, ScheduleCreateRequest, ScheduleTimingChange } from '@dsh-remote/client-core'
-import { applyLanguagePreference, isLanguagePreference, strings, type LanguagePreference } from '../../android/src/locales/i18n'
-import { isThemePreference, isTypographyDensity, type ThemePreference, type TypographyDensity, type ChatAppearance, normalizeChatAppearance, resolveChatMetrics, CHAT_ACCENT_SWATCHES, isActivityDockMode } from '../../android/src/ui/theme'
-import { foldHistory, applyMuxFrame, sessionRunningForMuxFrame } from '../../android/src/state/event-reducer'
-import { inboxQueuedItems, oldestSeq, prependHistory } from '../../android/src/state/message-helpers'
-import { withActiveCodexTurn } from '../../android/src/state/session-state'
-import { sessionPermissions } from '../../android/src/services/session-permissions'
-import { isSubagentSession } from '../../android/src/lib/session-kind'
-import { joinInventory, schemaFields, type AdaptedPluginInfo, type PluginBundleView, type PluginCategory, type SchemaField } from '../../android/src/services/plugin-catalog'
-import { resolveSessionDisplayTitle } from '../../android/src/screens/session-title'
-import { sessionToolsError } from '../../android/src/screens/session-tools-error'
-import { classifyWorkspaceFile, loadWorkspacePreview } from '../../android/src/services/workspace-file-preview'
-import { projectUiArtifacts, type UiArtifact } from '../../android/src/state/ui-artifacts'
-import { botMentionTarget, linkBotMentions } from '../../android/src/screens/bot/mentions'
-import { parseBotReplies } from '../../android/src/screens/bot/replies'
-import { text } from '../../android/src/services/bot-catalog'
-import { TerminalAttachment } from '../../android/src/services/terminal-attachment'
-import type { TerminalInfo } from '../../android/src/services/session-tools'
-import { createNativeRpcId } from '../../android/src/services/rpc-id'
+import { applyLanguagePreference, isLanguagePreference, strings, type LanguagePreference } from '../../../packages/app-core/src/locales/i18n'
+import { isThemePreference, type ThemePreference, type ChatAppearance, normalizeChatAppearance, resolveChatMetrics, CHAT_ACCENT_SWATCHES, isActivityDockMode } from '../../../packages/app-core/src/ui/theme'
+import { foldHistory, applyMuxFrame, sessionRunningForMuxFrame } from '../../../packages/app-core/src/state/event-reducer'
+import { inboxQueuedItems, oldestSeq, prependHistory } from '../../../packages/app-core/src/state/message-helpers'
+import { withActiveCodexTurn } from '../../../packages/app-core/src/state/session-state'
+import { sessionPermissions } from '../../../packages/app-core/src/services/session-permissions'
+import { isSubagentSession } from '../../../packages/app-core/src/lib/session-kind'
+import {
+  joinInventory, schemaFields, type AdaptedPluginInfo, type PluginBundleView, type PluginCategory, type SchemaField,
+} from '../../../packages/app-core/src/services/plugin-catalog'
+import { resolveSessionDisplayTitle } from '../../../packages/app-core/src/screens/session-title'
+import { sessionToolsError } from '../../../packages/app-core/src/screens/session-tools-error'
+import { classifyWorkspaceFile, loadWorkspacePreview } from '../../../packages/app-core/src/services/workspace-file-preview'
+import { projectUiArtifacts, type UiArtifact } from '../../../packages/app-core/src/state/ui-artifacts'
+import { botMentionTarget, linkBotMentions } from '../../../packages/app-core/src/screens/bot/mentions'
+import { parseBotReplies } from '../../../packages/app-core/src/screens/bot/replies'
+import { text } from '../../../packages/app-core/src/services/bot-catalog'
+import { TerminalAttachment } from '../../../packages/app-core/src/services/terminal-attachment'
+import type { TerminalInfo } from '../../../packages/app-core/src/services/session-tools'
+import { createNativeRpcId } from '../../../packages/app-core/src/services/rpc-id'
+import { isBusySendMode, resolveHarnessSendMode, type BusySendMode } from '../../../packages/app-core/src/screens/chat/composer-gate'
 import {
   loadCodexCatalog, codexSession, codexThreadId, codexItemsToChat, loadCodexModels,
   codexModelSelectionFromSession, readCodexSession, readCodexHistoryPage, mergeCodexLive,
-} from '../../android/src/services/codex'
-import { loadPiCatalog } from '../../android/src/services/pi'
-import { loadClaudeCatalog } from '../../android/src/services/claude'
-import { loadOpencodeCatalog } from '../../android/src/services/opencode'
-import { loadAntigravityCatalog } from '../../android/src/services/antigravity'
-import { applyCursorFrame, foldAcpHistory, mergeAcpHistoryAndLive, createCursorWorkspace, createCursorSession, createPiSession, createClaudeSession, createAntigravitySession, createOpencodeSession } from '../../android/src/services/cursor'
-import { loadAcpModels, selectAcpModel } from '../../android/src/services/acp-models'
+} from '../../../packages/app-core/src/services/codex'
+import { loadPiCatalog } from '../../../packages/app-core/src/services/pi'
+import { loadClaudeCatalog } from '../../../packages/app-core/src/services/claude'
+import { loadOpencodeCatalog } from '../../../packages/app-core/src/services/opencode'
+import { loadAntigravityCatalog } from '../../../packages/app-core/src/services/antigravity'
+import { applyCursorFrame, foldAcpHistory, mergeAcpHistoryAndLive, createCursorWorkspace, createCursorSession, createPiSession, createClaudeSession, createAntigravitySession, createOpencodeSession } from '../../../packages/app-core/src/services/cursor'
+import { loadAcpModels, selectAcpModel } from '../../../packages/app-core/src/services/acp-models'
 import { createCodexTimelineState, reduceCodexTimelineFrame, type CodexTimelineState,
   type HarnessSettingsDescribe, type HarnessSettingsPathOp, type ScheduleCatalogEntry, type ScheduleDeliveryRecord } from '@dsh-remote/client-core'
-import type { ChatItem, ConnectionPhase, DeviceIdentity, RemoteDevice, RemoteSession, WorkspaceView, SessionModels, MuxStreamFrame, AskUserQuestionItem, AskUserQuestionAnswer } from '../../android/src/types'
+import type { ChatItem, ConnectionPhase, DeviceIdentity, RemoteDevice, RemoteSession, WorkspaceView, SessionModels, MuxStreamFrame, AskUserQuestionItem, AskUserQuestionAnswer } from '../../../packages/app-core/src/types'
 import { vaultRead, vaultWrite, vaultDelete, attachPreferences, systemLocale } from './platform.js'
 import { readPreference as prefRead, writePreference as prefWrite } from './private-preferences'
 import { publishTaskNotification, requestNotificationPermission, updateActivityNotification } from './notifications'
 
 interface Credentials extends DeviceTokenPair { account: string }
+type TypographyDensity = 'compact' | 'standard'
+const isTypographyDensity = (value: unknown): value is TypographyDensity => value === 'compact' || value === 'standard'
 interface ReadingInput { id?: string; key?: string; offset?: number; atBottom?: boolean }
 interface PromptAttachment { data: string; mediaType: string; name?: string }
-interface Input { uri?: string; size?: number; images?: PromptAttachment[]; answers?: AskUserQuestionAnswer['answers']; server?: string; email?: string; password?: string; id?: string; text?: string; decision?: string; provider?: string; model?: string; effort?: string; path?: string; image?: string; mediaType?: string; name?: string; backend?: string; mode?: string; rating?: string; enabled?: boolean; offset?: number }
+interface Input { uri?: string; size?: number; images?: PromptAttachment[]; answers?: AskUserQuestionAnswer['answers']; server?: string; email?: string; password?: string; challenge?: string; code?: string; id?: string; text?: string; decision?: string; provider?: string; model?: string; effort?: string; path?: string; image?: string; mediaType?: string; name?: string; backend?: string; mode?: string; rating?: string; enabled?: boolean; offset?: number }
 interface PresetRow { id: string; name: string; description: string; current: boolean; broken: boolean }
 interface TerminalRow { id: string; title: string; shell: string; state: string }
 interface UiArtifactRow {
@@ -107,6 +112,11 @@ interface BotReplyRow { name: string; color: string; text: string; kind: string 
 interface BotEntryRow { id: string; name: string; role: string; model: string; color: string; main: boolean }
 interface NetworkRow { label: string; value: string; mono?: boolean }
 interface NetworkSection { title: string; rows: NetworkRow[] }
+interface DshWebSession {
+  grant: DshWebGrant
+  lan: boolean
+  local?: { close(): Promise<void> }
+}
 interface CustomPrompt { id: string; title: string; text: string }
 interface Row {
   heartbeatRaw?: string
@@ -137,6 +147,7 @@ const PREF_KEYS = {
   typographyDensity: 'dshremote.typography-density.v1',
   notifications: 'dshremote.notifications-enabled.v1',
   transportPreference: 'dshremote.transport-preference.v1',
+  busySendMode: 'dshremote.busy-send-mode.v1',
 } as const
 
 /** A string-only boundary keeps dynamic shared TS out of ArkUI's static types. */
@@ -272,15 +283,20 @@ export class HarmonyRuntime {
   private hasMore = false
   private beforeSeq?: number
   private defaultPermission = 'default'
+  private busySendMode: BusySendMode = 'queue'
   private statusBarVisible = true
   private notificationsEnabled = true
   private transportPreference: 'auto' | 'turn' | 'relay' = 'auto'
+  private membershipStatus = 'loading'
+  private membershipExpiresAt = ''
   private pendingNotificationSession?: { hostId: string; sessionId: string }
   private notifiedInputs = new Set<string>()
   private models?: SessionModels
   private modelWarning = ''
   private qr?: { qrId: string; scanUrl: string; expiresAt: number }
   private qrTimer?: ReturnType<typeof setTimeout>
+  private twoFactorChallenge = ''
+  private dshWebSession?: DshWebSession
   private emitTimer?: ReturnType<typeof setTimeout>
   private pinned: string[] = []
   private registeredWorkspaces: WorkspaceView[] = []
@@ -625,6 +641,13 @@ export class HarmonyRuntime {
         if (val === 'auto' || val === 'turn' || val === 'relay') this.transportPreference = val
       } catch {}
     }
+    const busySendRaw = await prefRead(PREF_KEYS.busySendMode)
+    if (busySendRaw) {
+      try {
+        const value = (JSON.parse(busySendRaw) as { value?: unknown }).value
+        if (isBusySendMode(value)) this.busySendMode = value
+      } catch {}
+    }
     applyLanguagePreference(this.languagePreference, [systemLocale()])
     this.applyTheme(this.themePreference)
     const builtIns = this.builtInPrompts()
@@ -733,6 +756,7 @@ export class HarmonyRuntime {
       this.lastConnectedDeviceId = await prefRead(this.lastHostKey())
       this.view = 'devices'
       await this.perform('refresh', '{}')
+      void this.loadMembership()
       await this.autoConnect()
     }
   }
@@ -744,7 +768,7 @@ export class HarmonyRuntime {
     if (action === 'saveReadingPosition') {
       try { return await this.saveReadingPosition(JSON.parse(raw) as ReadingInput) } catch { return false }
     }
-    if (this.busy && !['cancelUpload', 'cancelCompaction', 'disconnect', 'reconnect', 'interrupt', 'approval', 'question', 'back'].includes(action)) return false
+    if (this.busy && !['cancelUpload', 'cancelCompaction', 'disconnect', 'reconnect', 'interrupt', 'approval', 'question', 'back', 'closeDshWeb'].includes(action)) return false
     let input: Input
     try { input = JSON.parse(raw || '{}') as Input } catch { return false }
     let success = true
@@ -755,6 +779,8 @@ export class HarmonyRuntime {
     this.publish()
     try {
       if (action === 'login') await this.login(input)
+      else if (action === 'verifyTwoFactor') await this.verifyTwoFactor(input.code ?? '')
+      else if (action === 'cancelTwoFactor') this.cancelTwoFactor()
       else if (action === 'startOAuth') await this.startOAuth(input)
       else if (action === 'cancelOAuth') this.cancelOAuth()
       else if (action === 'qr') await this.startQr(input)
@@ -784,6 +810,7 @@ export class HarmonyRuntime {
       else if (action === 'showMore') { this.visibleCounts[input.id ?? ''] = (this.visibleCounts[input.id ?? ''] ?? SESSION_PAGE_SIZE) + 10; this.saveViewPrefs() }
       else if (action === 'favorite') await this.toggleFavorite(input.id ?? '')
       else if (action === 'archive') await this.archiveSession(input.id ?? '')
+      else if (action === 'unarchive') await this.unarchiveSession(input.id ?? '')
       else if (action === 'fork') await this.forkMessage(input.id ?? '')
       else if (action === 'feedback') await this.rateMessage(input.id ?? '', input.rating ?? '')
       else if (action === 'morePanel') await this.loadPanel()
@@ -795,6 +822,10 @@ export class HarmonyRuntime {
       else if (action === 'compactHistory') await this.toggleCompactHistory()
       else if (action === 'sessionInfo') await this.loadInfo()
       else if (action === 'networkDetails') await this.loadNetworkDetails()
+      else if (action === 'membership') await this.loadMembership()
+      else if (action === 'openMembership') await this.openBrowserUrl('https://dsh.r2049.cn/pricing')
+      else if (action === 'openDshWeb') await this.openDshWeb()
+      else if (action === 'closeDshWeb') await this.closeDshWeb()
       else if (action === 'plugins') await this.loadPlugins()
       else if (action === 'pluginToggle') await this.togglePlugin(input.id ?? '', input.mode === 'on')
       else if (action === 'pluginForm') await this.openPluginForm(input.id ?? '')
@@ -1031,6 +1062,12 @@ export class HarmonyRuntime {
         this.transportPreference = val
         await prefWrite(PREF_KEYS.transportPreference, JSON.stringify({ value: val }))
       }
+      else if (action === 'setBusySendMode') {
+        const value = input.mode ?? input.name
+        if (!isBusySendMode(value)) throw new Error('运行中发送方式无效。')
+        this.busySendMode = value
+        await prefWrite(PREF_KEYS.busySendMode, JSON.stringify({ value }))
+      }
       else if (action === 'logout') await this.logout()
       else if (action === 'renameHost') { await (await this.api()).renameAccountDevice(input.id ?? '', input.name ?? ''); await this.refreshDevices() }
       else if (action === 'back') {
@@ -1053,8 +1090,35 @@ export class HarmonyRuntime {
     this.stopQr(); await this.setServer(input)
     if (!this.identity) throw new Error('本机安全身份不可用，请重新启动。')
     const api = new RemoteServerApi(this.server)
-    const result = await api.loginAccount(input.email ?? '', input.password ?? '')
-    await this.register(result.token, result.account)
+    this.twoFactorChallenge = ''
+    try {
+      const result = await api.loginAccount(input.email ?? '', input.password ?? '')
+      await this.register(result.token, result.account)
+    } catch (error) {
+      if (!(error instanceof AccountTwoFactorRequired)) throw error
+      this.twoFactorChallenge = error.challenge
+      this.notice = '请输入身份验证器验证码。'
+    }
+  }
+  private async verifyTwoFactor(code: string): Promise<void> {
+    const challenge = this.twoFactorChallenge
+    if (!challenge) throw new Error('验证请求已失效，请重新输入密码。')
+    if (!this.identity) throw new Error('本机身份不可用。')
+    const api = new RemoteServerApi(this.server)
+    try {
+      const result = await api.verifyAccountLogin(challenge, code)
+      await this.register(result.token, result.account)
+    } catch (error) {
+      if ((error as { code?: unknown }).code === 'TWO_FACTOR_EXPIRED') {
+        this.twoFactorChallenge = ''
+        throw new Error('验证码已过期，请重新输入密码登录。')
+      }
+      throw error
+    }
+  }
+  private cancelTwoFactor(): void {
+    this.twoFactorChallenge = ''
+    this.notice = '已取消验证码验证。'
   }
   private async register(token: string, account: string): Promise<void> {
     if (!this.identity) throw new Error('本机身份不可用。')
@@ -1062,7 +1126,10 @@ export class HarmonyRuntime {
     const credentials = { ...pair, account }
     await vaultWrite(this.key('credentials'), JSON.stringify(credentials))
     this.credentials = credentials; this.account = account; this.view = 'devices'
+    this.twoFactorChallenge = ''
+    this.membershipStatus = 'loading'; this.membershipExpiresAt = ''
     await this.refreshDevices()
+    void this.loadMembership()
     this.lastConnectedDeviceId = await prefRead(this.lastHostKey())
     await this.autoConnect()
   }
@@ -1228,6 +1295,24 @@ export class HarmonyRuntime {
     if (server !== this.server || account !== this.account) throw new Error('账号已切换。')
     this.devices = devices
   }
+  private async loadMembership(): Promise<void> {
+    if (!this.credentials || !this.identity) {
+      this.membershipStatus = 'unavailable'; this.membershipExpiresAt = ''
+      return
+    }
+    const server = this.server, account = this.account
+    this.membershipStatus = 'loading'; this.membershipExpiresAt = ''
+    this.publish()
+    try {
+      const membership = await (await this.api()).deviceAccountMembership()
+      if (server !== this.server || account !== this.account) return
+      this.membershipStatus = membership.status
+      this.membershipExpiresAt = membership.expiresAt === undefined ? '' : dayOf(membership.expiresAt)
+    } catch {
+      if (server !== this.server || account !== this.account) return
+      this.membershipStatus = 'unavailable'; this.membershipExpiresAt = ''
+    }
+  }
   /** Checks the descriptor against the local trust record without touching navigation. */
   private async verifyHost(id: string): Promise<RemoteDevice> {
     const peer = await (await this.api()).deviceFor(id)
@@ -1304,8 +1389,14 @@ export class HarmonyRuntime {
       }, {
         forceRelay,
         preferredTransports,
+        liveTransportUpgrade: !forceRelay && preference === 'auto',
         refreshAccessToken: async () => { await this.api(); return this.credentials!.accessToken },
         fetchIceServers: async connectionId => (await this.api()).turnCredentials(connectionId),
+        onTransportUpgraded: () => {
+          if (generation !== this.generation) return
+          this.status = 'Noise IK · 已升级直连'
+          void this.loadNetworkDetails().catch(() => undefined)
+        },
         onSecureHandshake: () => { if (generation === this.generation) { this.status = '验证 Noise IK 身份'; this.publish() } },
         onClose: event => {
           if (generation !== this.generation) return
@@ -1508,22 +1599,49 @@ export class HarmonyRuntime {
     this.requireConnected()
     const session = this.sessions.find(s => s.sessionId === id)
     if (!session) throw new Error('会话不存在，请刷新工作区。')
+    if (isSubagentSession(session)) throw new Error('子任务会话不能归档。')
+    const backend = session.backend ?? 'harness'
     const active = this.session?.sessionId === id
-    if (!session.backend || session.backend === 'harness') {
+    if (backend === 'harness') {
       // The mutation returns the complete Host-confirmed archive set; catalog
       // membership stays, the filter hides the row.
       this.archived = await this.connection.requireProxy().workspaceArchiveSession(id)
-    } else if (session.backend === 'opencode') {
+      this.pinned = this.pinned.filter(row => row !== id)
+    } else if (backend === 'codex') {
+      await this.connection.requireCodex().request('thread/archive', { threadId: codexThreadId(session) })
+      this.sessions = this.sessions.filter(row => row.sessionId !== id)
+      for (const workspace of this.workspaces) workspace.sessionIds = workspace.sessionIds.filter(row => row !== id)
+      this.pinned = this.pinned.filter(row => row !== id)
+    } else if (backend === 'opencode') {
       await this.acp('opencode').archiveSession(session.nativeId ?? id.split(':').slice(1).join(':'), 'opencode')
       this.sessions = this.sessions.filter(s => s.sessionId !== id)
       for (const workspace of this.workspaces) workspace.sessionIds = workspace.sessionIds.filter(row => row !== id)
+      this.pinned = this.pinned.filter(row => row !== id)
     } else throw new Error('此后端暂不支持归档。')
     if (active) {
-      if (this.stream) await this.stream.close(); this.stream = undefined
-      this.session = undefined; this.messages = []; this.codexState = undefined; this.models = undefined
-      ++this.selection; this.view = 'workspaces'
+      await this.clearActiveSession()
     }
     this.notice = '已归档，可在视图选项的「仅已归档」中查看。'
+  }
+  private async unarchiveSession(id: string): Promise<void> {
+    this.requireConnected()
+    const session = this.sessions.find(s => s.sessionId === id)
+    if (!session) throw new Error('会话不存在，请刷新工作区。')
+    if ((session.backend ?? 'harness') !== 'harness') throw new Error('仅 Harness 会话支持取消归档。')
+    this.archived = await this.connection.requireProxy().workspaceUnarchiveSession(id)
+    this.notice = '已取消归档。'
+  }
+  private async clearActiveSession(): Promise<void> {
+    if (this.stream) await this.stream.close().catch(() => undefined)
+    this.stream = undefined
+    this.session = undefined
+    this.messages = []
+    this.codexState = undefined
+    this.models = undefined
+    this.running = false
+    this.info = []
+    ++this.selection
+    this.view = 'workspaces'
   }
   private async forkMessage(id: string): Promise<void> {
     this.requireConnected()
@@ -1902,6 +2020,67 @@ export class HarmonyRuntime {
     await prefWrite(this.compactKey(), JSON.stringify({ value: next }))
     this.notice = next ? '已开启紧凑历史。' : '已关闭紧凑历史。'
   }
+  private async openDshWeb(): Promise<void> {
+    this.requireConnected()
+    await this.closeDshWeb(false)
+    const connection = this.connection
+    let localPromise: ReturnType<AndroidRemoteConnection['openLanWeb']> | undefined
+    let localError: unknown
+    let openedUrl = ''
+    const onFailure = (): void => {
+      if (!this.dshWebSession || (openedUrl.length > 0 && this.dshWebSession.grant.url !== openedUrl)) return
+      this.dshWebSession = undefined
+      if (this.connected) this.error = 'DSH Web 的局域网会话已关闭，请重新打开。'
+      this.schedulePublish()
+    }
+    try {
+      localPromise = connection.openLanWeb(onFailure)
+      if (localPromise) {
+        const session = await localPromise
+        const lanGrant = dshWebLanGrantSchema.parse({
+          url: session.url, browserGrant: session.browserGrant, expiresAt: session.expiresAt, sessionId: session.sessionId,
+        })
+        if (!isDshWebGrantUsable(lanGrant)) throw new Error('DSH Web 授权已过期，请重试。')
+        openedUrl = lanGrant.url
+        this.dshWebSession = { grant: lanGrant, lan: true, local: session }
+        this.notice = ''
+        this.publish()
+        return
+      }
+    } catch (error) {
+      localError = error
+      await localPromise?.then(session => session.close()).catch(() => undefined)
+      const unsupported = (error as { code?: unknown }).code === 'FEATURE_NOT_SUPPORTED'
+      if (!unsupported || !connection.supportsDshWebTunnel()) throw error
+    }
+    if (!connection.supportsDshWebTunnel()) {
+      if (localError) throw localError
+      throw new Error('当前主机未提供 DSH Web。')
+    }
+    const grant = dshWebGrantSchema.parse(await connection.rpc('dsh.web.open', {}))
+    if (!isDshWebGrantUsable(grant)) throw new Error('DSH Web 授权已过期，请重试。')
+    this.dshWebSession = { grant, lan: false }
+    this.notice = ''
+    this.publish()
+  }
+  private async closeDshWeb(publish = true): Promise<void> {
+    const session = this.dshWebSession
+    this.dshWebSession = undefined
+    if (session) {
+      if (session.local) {
+        await session.local.close().catch(() => undefined)
+      } else if (this.connection.supportsDshWebTunnel()) {
+        const controller = new AbortController()
+        const timer = setTimeout(() => controller.abort(), 4000)
+        try {
+          await this.connection.rpc('dsh.web.close', {}, controller.signal).catch(() => undefined)
+        } finally {
+          clearTimeout(timer)
+        }
+      }
+    }
+    if (publish) this.publish()
+  }
   /** Subagent children only; forks carry a parent but are ordinary conversations. */
   private childRows(): CatalogRow[] {
     const session = this.session
@@ -2009,7 +2188,7 @@ export class HarmonyRuntime {
       // upgrade guidance Android does instead of the raw gateway error.
       throw new Error(sessionToolsError(error))
     }
-    this.pluginViews = joinInventory(bundles, plugins, settings, harmonyAdaptedPlugins())
+    this.pluginViews = joinInventory(bundles, plugins, settings, HARMONY_REMOTE_ADAPTED_PLUGINS)
     this.settingsWritable = settings.writable
     const rows: PluginRow[] = []
     for (const section of PLUGIN_SECTIONS) {
@@ -2800,16 +2979,25 @@ export class HarmonyRuntime {
     }
     validateImageInput(session, images)
     const selection = this.selection
+    const runningAtSend = session.running === true || this.running
+    const harnessSendMode = resolveHarnessSendMode({ running: runningAtSend, preferredMode: this.busySendMode })
     this.running = true; for (const file of files) this.stagedData.delete(file.id); this.stagedFiles = this.stagedFiles.filter(row => !files.includes(row)); this.publish()
     try {
       if (backend === 'harness') await this.connection.requireProxy().sessionPrompt(session.sessionId, input.text ?? '', undefined,
-        images)
+        images, [], harnessSendMode)
       else if (backend === 'codex') {
-        const content: unknown[] = [...((input.text ?? '').length ? [{ type: 'text', text: input.text }] : []), ...images.map(image => ({ type: 'image', url: `data:${image.mediaType};base64,${image.data}` }))]
+        const content: unknown[] = [...((input.text ?? '').length ? [{ type: 'text', text: input.text }] : []),
+          ...images.map(image => ({ type: 'image', mediaType: image.mediaType, data: image.data }))]
         const chosen = this.codexSelections.get(session.sessionId) ?? this.models?.current
         const client = this.connection.requireCodex()
-        await client.request('thread/resume', { threadId: codexThreadId(session), permissionPreset: codexPermissionPreset(session), ...(chosen?.provider === 'codex' ? { model: chosen.model } : {}) })
-        await client.request('turn/start', { threadId: codexThreadId(session), input: content, ...(chosen?.provider === 'codex' ? { model: chosen.model, ...(chosen.reasoningEffort ? { effort: chosen.reasoningEffort } : {}) } : {}) })
+        const threadId = codexThreadId(session)
+        const activeTurnId = this.codexState?.activeTurnId
+        if (activeTurnId) {
+          await client.request('turn/steer', { threadId, expectedTurnId: activeTurnId, input: content })
+        } else {
+          await client.request('thread/resume', { threadId, permissionPreset: codexPermissionPreset(session), ...(chosen?.provider === 'codex' ? { model: chosen.model } : {}) })
+          await client.request('turn/start', { threadId, input: content, ...(chosen?.provider === 'codex' ? { model: chosen.model, ...(chosen.reasoningEffort ? { effort: chosen.reasoningEffort } : {}) } : {}) })
+        }
       } else {
         const response = await this.acp(session.backend!).prompt(session.nativeId!, input.text ?? '', undefined,
           images.map(image => ({ type: 'image', mimeType: image.mediaType, data: image.data })), backend)
@@ -2946,6 +3134,7 @@ export class HarmonyRuntime {
   }
   private requireConnected(): void { if (!this.connected) throw new Error('请先连接主机。') }
   private async disconnect(navigate = true, invalidate = true, muteAutoConnect = true): Promise<void> {
+    await this.closeDshWeb(false)
     this.download.cancel(); ++this.downloadRevision; this.downloadBusy = false
     this.taskNotifications.reset(); this.observedMessages.clear()
     if (this.notificationTimer) clearTimeout(this.notificationTimer)
@@ -2983,8 +3172,9 @@ export class HarmonyRuntime {
   }
   private async logout(): Promise<void> {
     const key = this.lastHostKey()
-    this.stopQr(); await this.disconnect(); await vaultDelete(this.key('credentials'))
+    this.stopQr(); this.cancelTwoFactor(); await this.disconnect(); await vaultDelete(this.key('credentials'))
     this.credentials = undefined; this.account = ''; this.devices = []; this.candidate = undefined; this.view = 'login'
+    this.membershipStatus = 'loading'; this.membershipExpiresAt = ''
     this.lastConnectedDeviceId = ''; await prefWrite(key, '')
   }
   async dispose(): Promise<void> { this.stopQr(); if (this.emitTimer) clearTimeout(this.emitTimer); this.listener = () => undefined; try { await this.flushDrafts() } finally { await this.disconnect() } }
@@ -3059,6 +3249,7 @@ export class HarmonyRuntime {
       return { ...base, kind: 'question', title: '主机提问', text: '', detail: item.outcome ?? '', pending: !item.outcome && this.connected, questions: item.questions }
     })
     const archived = new Set(this.archived)
+    const currentBackend = this.session?.backend ?? 'harness'
     const visibleSessions = this.sessions.filter(s => !archived.has(s.sessionId))
     const scoped = (rows: RemoteSession[]): CatalogRow[] => rows
       .map(s => ({ id: s.sessionId, name: sessionName(s), description: `${s.backend ?? 'harness'}${s.running ? ' · 回复中' : ''}`, favorite: this.pinned.includes(s.sessionId), backend: s.backend ?? 'harness', count: 0, archived: archived.has(s.sessionId) }))
@@ -3085,6 +3276,7 @@ export class HarmonyRuntime {
       appVersion: HARMONY_VERSION, updateVersion: this.updateVersion, backgroundActive: residentTaskActive(), backgroundError: residentTaskError(), downloadBusy: this.downloadBusy, downloadBytes: this.downloadBytes,
       view: this.view, server: this.server, account: this.account, busy: this.busy, connected: this.connected,
       status: this.status, error: this.translate(this.error), notice: this.translate(this.notice), running: this.running, hasMore: this.hasMore,
+      twoFactorRequired: this.twoFactorChallenge.length > 0,
       recovering: this.willRetry(), canReconnect: this.host !== undefined && !this.connected && this.phase !== 'connecting',
       sessionBackend: this.session?.backend ?? 'harness',
       hostName: this.host?.name ?? '',
@@ -3105,6 +3297,10 @@ export class HarmonyRuntime {
       backend: this.backend, groupBy: this.groupBy, orderBy: this.orderBy, archiveFilter: this.archiveFilter,
       archivedCount: this.archived.length,
       overview: this.overviewRows(archived), workspaceOverview: this.overviewRows(archived, 'workspace'),
+      currentSessionId: this.session?.sessionId ?? '',
+      sessionArchived: this.session !== undefined && currentBackend === 'harness' && archived.has(this.session.sessionId),
+      canArchiveSession: this.session !== undefined && !isSubagentSession(this.session)
+        && (currentBackend === 'harness' || currentBackend === 'codex' || currentBackend === 'opencode'),
       title: this.view === 'chat' ? (this.session ? sessionName(this.session) : '新对话') : this.view === 'sessions' ? this.workspace?.title ?? '会话' : this.host?.name ?? 'DSH Remote',
       workspaceTitle: (this.workspace ?? this.workspaces.find(row => row.sessionIds.includes(this.session?.sessionId ?? '')))?.title ?? '未分组',
       rows, modelWarning: this.modelWarning,
@@ -3119,6 +3315,14 @@ export class HarmonyRuntime {
       languagePreference: this.languagePreference, themePreference: this.themePreference,
       chatAppearance: JSON.stringify(this.chatAppearance), accentColor: CHAT_ACCENT_SWATCHES[this.chatAppearance.accent].light.primary, activityDockMode: this.activityDockMode,
       typographyDensity: this.typographyDensity,
+      busySendMode: this.busySendMode,
+      membershipStatus: this.membershipStatus, membershipExpiresAt: this.membershipExpiresAt,
+      dshWebAvailable: this.connected && this.connection.supportsDshWeb(),
+      dshWebTunnelAvailable: this.connected && this.connection.supportsDshWebTunnel(),
+      dshWebUrl: this.dshWebSession?.grant.url ?? '',
+      dshWebGrant: this.dshWebSession?.grant.browserGrant ?? '',
+      dshWebExpiresAt: this.dshWebSession?.grant.expiresAt ?? 0,
+      dshWebLan: this.dshWebSession?.lan === true,
       notificationsEnabled: this.notificationsEnabled,
       transportPreference: this.transportPreference,
       plugins: this.pluginRows, settingsWritable: this.settingsWritable,
@@ -3155,13 +3359,17 @@ export class HarmonyRuntime {
     this.syncTaskNotifications()
   }
 }
-/** Plugins this port renders natively; the wording follows the phone's language. */
-function harmonyAdaptedPlugins(): Readonly<Record<string, AdaptedPluginInfo>> {
-  return {
-    'deepseek-harness-intelligent-ui': {
-      title: 'Intelligent UI', feature: (): string => strings.plugins.intelligentUiFeature, settingsSince: '0.2.10',
-    },
-  }
+/** Remote-adapted plugins that the phone renders natively. */
+const HARMONY_REMOTE_ADAPTED_PLUGINS: Readonly<Record<string, AdaptedPluginInfo>> = {
+  'deepseek-harness-intelligent-ui': {
+    title: 'Intelligent UI',
+    feature: (): string => strings.plugins.intelligentUiFeature,
+    settingsSince: '0.2.10',
+  },
+  'ds-bot': {
+    title: 'DS Bot',
+    feature: (): string => strings.bots.notInstalled,
+  },
 }
 /** The plugin page's sections, in Android's order. */
 const PLUGIN_SECTIONS: Array<{ category: PluginCategory; title: () => string; hint: () => string }> = [
@@ -3211,6 +3419,9 @@ function dayOf(time: number): string {
   return `${date.getFullYear()}/${String(date.getMonth() + 1).padStart(2, '0')}/${String(date.getDate()).padStart(2, '0')}`
 }
 function group(value: number): string { return String(value).replace(/\B(?=(\d{3})+(?!\d))/g, ',') }
+export function isDshWebGrantUsable(grant: { expiresAt: number }, now = Date.now()): boolean {
+  return grant.expiresAt + 60_000 > now
+}
 function minimumSeq(events: Array<{ event: { seq: number } }>): number | undefined { return events.length ? Math.min(...events.map(e => e.event.seq)) : undefined }
 /** Official Harness rows keep the name in projections; the top-level title is usually absent. */
 function sessionName(session: RemoteSession): string { return resolveSessionDisplayTitle(session) ?? '新对话' }

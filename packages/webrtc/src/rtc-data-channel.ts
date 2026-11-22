@@ -38,6 +38,8 @@ export interface RtcPathDetails {
   remoteAddressScope?: RtcAddressScope
   localAddress?: string
   remoteAddress?: string
+  remotePort?: number
+  explicitlySelected?: boolean
   protocol?: string
   relayProtocol?: string
   currentRoundTripTimeMs?: number
@@ -161,6 +163,7 @@ export class RtcDataChannelTransport {
   private channel?: RtcDataChannel
   private readonly remoteCandidates: RtcIceCandidateInit[] = []
   private remoteDescriptionSet = false
+  private opening = false
   private opened = false
   private closed = false
 
@@ -309,6 +312,18 @@ export class RtcDataChannelTransport {
     }
   }
 
+  async nominatedGlobalIpv6Endpoints(): Promise<Map<string, { local: string; remotes: Set<string | undefined> }>> {
+    const endpoints = new Map<string, { local: string; remotes: Set<string | undefined> }>()
+    if (this.channel?.readyState !== 'open') return endpoints
+    await this.refreshStatsDiagnostics((local, port, remote) => {
+      const key = `${local}:${port}`
+      const endpoint = endpoints.get(key) ?? { local, remotes: new Set() }
+      endpoint.remotes.add(remote)
+      endpoints.set(key, endpoint)
+    })
+    return endpoints
+  }
+
   async connectionDetails(): Promise<RtcConnectionDetails> {
     let statsDetails: RtcPathDetails = {}
     try {
@@ -342,6 +357,7 @@ export class RtcDataChannelTransport {
   async close(): Promise<void> {
     if (this.closed) return
     this.closed = true
+    this.opening = false
     this.clearNegotiation()
     this.openReject?.(new RtcConnectError('RTC_CLOSED', 'WebRTC transport closed during negotiation.'))
     this.openResolve = undefined
@@ -455,19 +471,24 @@ export class RtcDataChannelTransport {
     this.channel = channel
     channel.binaryType = 'arraybuffer'
     channel.onopen = () => {
-      if (this.closed || this.opened) return
-      this.opened = true
-      const resolve = this.openResolve
+      if (this.closed || this.opened || this.opening) return
+      this.opening = true
       this.clearNegotiation()
       void this.resolveSelectedTransport().then(() => {
-        if (this.closed) return
+        this.opening = false
+        if (this.closed || this.channel !== channel || channel.readyState !== 'open') {
+          this.failOpen(new RtcConnectError('RTC_CLOSED', 'WebRTC data channel closed.'))
+          return
+        }
+        this.opened = true
+        const resolve = this.openResolve
         this.openResolve = undefined
         this.openReject = undefined
         resolve?.()
       })
     }
     channel.onmessage = event => {
-      if (this.closed || !this.opened) return
+      if (this.closed || (!this.opened && !this.opening)) return
       const data = event.data
       const frame = typeof data === 'string' ? new TextEncoder().encode(data) : new Uint8Array(data)
       this.bytesReceived += frame.byteLength
@@ -481,10 +502,14 @@ export class RtcDataChannelTransport {
     }
     channel.onclose = () => {
       if (this.closed) return
+      const wasOpening = this.opening
+      this.opening = false
       this.failOpen(new RtcConnectError('RTC_CLOSED', 'WebRTC data channel closed.'))
       if (this.opened) {
         this.opened = false
         for (const handler of this.closeHandlers) handler()
+      } else if (wasOpening) {
+        void this.close()
       }
     }
     channel.onerror = () => {
@@ -541,6 +566,7 @@ export class RtcDataChannelTransport {
     if (this.closed || this.opened || this.openReject === undefined) return
     const reject = this.openReject
     this.clearNegotiation()
+    this.opening = false
     this.openResolve = undefined
     this.openReject = undefined
     reject(error)
@@ -596,7 +622,7 @@ export class RtcDataChannelTransport {
     this.lastBufferedAmount = 0
   }
 
-  private async refreshStatsDiagnostics(): Promise<RtcPathDetails> {
+  private async refreshStatsDiagnostics(onGlobalIpv6Pair?: (local: string, port: number, remote: string | undefined) => void): Promise<RtcPathDetails> {
     // Native getStats() must not leave startup waiting after the channel opens.
     const stats = [...await new Promise<RtcStats>((resolve, reject) => {
       const timer = setTimeout(() => reject(new Error('WebRTC statistics timed out.')), 250)
@@ -604,7 +630,7 @@ export class RtcDataChannelTransport {
     })]
     if (this.closed) return {}
     this.candidatePairTelemetry = inspectCandidatePairs(stats)
-    return inspectSelectedPath(stats)
+    return inspectSelectedPath(stats, onGlobalIpv6Pair)
   }
 
   private handlePeerDiagnostic(event: RtcPeerConnectionDiagnosticEvent): void {
@@ -657,12 +683,16 @@ export function detectSelectedPath(stats: RtcStats): RtcSelectedPath | undefined
     : { transport: details.transport, mode: details.mode }
 }
 
-export function inspectSelectedPath(stats: RtcStats): RtcPathDetails {
+export function inspectSelectedPath(
+  stats: RtcStats,
+  onGlobalIpv6Pair?: (local: string, port: number, remote: string | undefined) => void,
+): RtcPathDetails {
   // candidate-pair `localCandidateId`/`remoteCandidateId` reference the `id`
   // member of the local/remote-candidate stats (not the report map key).
   const candidates = new Map<string, RtcStatsEntry>()
   const candidatePairs = new Map<string, RtcStatsEntry>()
   const selectedPairs: RtcStatsEntry[] = []
+  const nominatedPairs: RtcStatsEntry[] = []
   const selectedPairIds = new Set<string>()
   for (const [reportId, entry] of stats) {
     if (entry.type === 'local-candidate' || entry.type === 'remote-candidate') {
@@ -670,8 +700,10 @@ export function inspectSelectedPath(stats: RtcStats): RtcPathDetails {
         candidates.set(String(entry.id), entry)
       }
     } else if (entry.type === 'candidate-pair') {
-      candidatePairs.set(String(entry.id ?? reportId), entry)
-      if (entry.selected === true || entry.nominated === true) selectedPairs.push(entry)
+      const pair = { ...entry, id: entry.id ?? reportId }
+      candidatePairs.set(String(pair.id), pair)
+      if (entry.selected === true) selectedPairs.push(pair)
+      else if (entry.nominated === true && entry.state === 'succeeded') nominatedPairs.push(pair)
     } else if (entry.type === 'transport' && typeof entry.selectedCandidatePairId === 'string') {
       selectedPairIds.add(entry.selectedCandidatePairId)
     }
@@ -679,7 +711,23 @@ export function inspectSelectedPath(stats: RtcStats): RtcPathDetails {
   const pairs = [
     ...[...selectedPairIds].map(id => candidatePairs.get(id)).filter((pair): pair is RtcStatsEntry => pair !== undefined),
     ...selectedPairs,
+    ...nominatedPairs,
   ]
+  if (onGlobalIpv6Pair !== undefined) {
+    // The browser can nominate more than one working leg. Report only Host
+    // sockets supported by nominated pairs, for matching against its view.
+    for (const pair of new Set(pairs)) {
+      const local = candidates.get(String(pair.localCandidateId))
+      const remote = candidates.get(String(pair.remoteCandidateId))
+      const address = candidateAddressValue(local)
+      const port = numberStat(local, 'port')
+      if (local?.candidateType !== 'host' || !address || !isGlobalIpv6(address)
+        || port === undefined || !Number.isInteger(port) || port < 1 || port > 65535) continue
+      const remoteAddress = candidateAddressValue(remote)
+      onGlobalIpv6Pair(address, port, (remote?.candidateType === 'host' || remote?.candidateType === 'prflx')
+        && remoteAddress && isGlobalIpv6(remoteAddress) ? remoteAddress : undefined)
+    }
+  }
   for (const pair of pairs) {
     const local = candidates.get(String(pair.localCandidateId))
     const remote = candidates.get(String(pair.remoteCandidateId))
@@ -703,6 +751,8 @@ export function inspectSelectedPath(stats: RtcStats): RtcPathDetails {
       remoteAddressScope,
       localAddress: candidateAddress(local),
       remoteAddress: candidateAddress(remote),
+      remotePort: numberStat(remote, 'port'),
+      explicitlySelected: pair.selected === true || selectedPairIds.has(String(pair.id)),
       protocol: stringStat(local, 'protocol') ?? stringStat(remote, 'protocol'),
       relayProtocol: stringStat(local, 'relayProtocol') ?? stringStat(remote, 'relayProtocol'),
       currentRoundTripTimeMs: currentRoundTripTime === undefined
@@ -838,6 +888,10 @@ function candidateTypeStat(candidate: RtcStatsEntry | undefined): RtcCandidateTy
 
 function candidateAddressValue(candidate: RtcStatsEntry | undefined): string | undefined {
   return stringStat(candidate, 'address') ?? stringStat(candidate, 'ip')
+}
+
+function isGlobalIpv6(address: string): boolean {
+  return /^[23][0-9a-f]{3}:/i.test(address)
 }
 
 function isLanCandidatePair(

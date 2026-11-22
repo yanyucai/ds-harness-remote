@@ -203,6 +203,8 @@ describe('ClientModeRuntime Host account control', () => {
         ['lan', 'p2p', 'relay'], ['turn', 'relay'], ['relay'],
       ])
       expect(create).toHaveBeenCalledTimes(2)
+      expect(sockets.slice(0, 2).flatMap(socket => socket.sent).some(frame => frame.type === 'secure.handshake' || frame.type === 'relay.attach')).toBe(false)
+      expect(sockets[2]?.sent.filter(frame => frame.type === 'secure.handshake')).toHaveLength(1)
       expect(sockets.slice(0, 2).every(socket => socket.readyState === 3)).toBe(true)
       expect(connected.client.getStats().mode).toBe('Relay')
       // Agent discovery uses the same real handshake/fallback path without
@@ -346,6 +348,13 @@ describe('ClientModeRuntime Host account control', () => {
               cursor: false,
               antigravity: false,
               opencode: true,
+            })
+            client.rpc.mockResolvedValueOnce({
+              capabilities: ['agent.acp.v1', 'agent.acp.opencode.v1', 'agent.acp.opencode.archive.v1'],
+            })
+            expect(await probeRemoteHostFeatures(client as never)).toMatchObject({
+              opencode: true,
+              acpOpencodeArchive: true,
             })
           },
         },
@@ -774,6 +783,100 @@ describe('ClientModeRuntime Host account control', () => {
     expect(rpc).toHaveBeenCalledWith('codex.app.respond', { requestHandle: 'handle-1', decision: 'decline' }, signal)
     await runtime.handleControl('codex.stream.close', { streamId: 'web-stream-1' }, signal)
     await runtime.close()
+  })
+
+  it('forwards replayTruncated from codex.stream.open only when true across remote and local hosts', async () => {
+    await runScenarios([
+      { name: 'remote-truncated', mode: 'remote', upstreamResult: { opened: true, replayTruncated: true }, expectTruncated: true },
+      { name: 'remote-omitted', mode: 'remote', upstreamResult: { opened: true }, expectTruncated: false },
+      { name: 'remote-false', mode: 'remote', upstreamResult: { opened: true, replayTruncated: false }, expectTruncated: false },
+      { name: 'local-truncated', mode: 'local', upstreamResult: { opened: true, streamId: 'stream-local-truncated', threadId: 'thr_1', replayTruncated: true }, expectTruncated: true },
+      { name: 'local-omitted', mode: 'local', upstreamResult: { opened: true, streamId: 'stream-local-omitted', threadId: 'thr_1' }, expectTruncated: false },
+    ].map(row => ({
+      name: row.name,
+      run: async () => {
+        const directory = await mkdtemp(join(tmpdir(), 'dsh-client-codex-replay-'))
+        directories.push(directory)
+        const host = row.mode === 'local'
+          ? {
+              hostStatus: () => ({ configured: false, online: false, reconnecting: false, authorized: false, accountRequired: false }),
+              reconnectHost: vi.fn(),
+              clearHostAuthorization: vi.fn(async () => undefined),
+              authorizeHostAsOwned: vi.fn(async () => undefined),
+              authorizeHostWithAccount: vi.fn(async () => undefined),
+              authorizeHostWithCode: vi.fn(async () => undefined),
+              codexStatus: () => ({ available: true }),
+              codexCall: vi.fn(async () => ({})),
+              codexRespond: vi.fn(async () => ({ resolved: true as const })),
+              codexOpenStream: vi.fn(async () => row.upstreamResult),
+              codexCloseStream: vi.fn(async () => ({ closed: true })),
+            } as unknown as HostAuthorizationControl
+          : undefined
+        const runtime = new ClientModeRuntime(
+          config(),
+          new IdentityStore({ directory }),
+          { bindIdentity: vi.fn() } as unknown as ClientServerApi,
+          gateway(),
+          logger(),
+          host,
+        )
+        await runtime.start()
+        const rpc = vi.fn(async (method: string) => {
+          if (method === 'codex.app.stream.open') return row.upstreamResult
+          if (method === 'codex.app.stream.close') return { closed: true }
+          throw new Error(`Unexpected RPC method: ${method}`)
+        })
+        if (row.mode === 'remote') {
+          ;(runtime as unknown as { connected: unknown }).connected = {
+            client: {
+              rpc,
+              close: vi.fn(async () => undefined),
+              getStats: () => ({ mode: 'Relay', connected: true }),
+              onEvent: () => () => undefined,
+            },
+            target: {
+              deviceId: 'host-device-1',
+              name: 'Workstation',
+              platform: 'linux',
+              publicKey: 'peer-key',
+              fingerprint: 'PEER',
+              trustedAt: 1,
+            },
+            transport: {},
+            features: { commandList: false, fileViewer: false, remoteGateway: false, codex: true },
+          }
+        }
+        const streamId = `stream-${row.name}`
+        const signal = new AbortController().signal
+        try {
+          const opened = await runtime.handleControl('codex.stream.open', {
+            streamId,
+            threadId: 'thr_1',
+          }, signal)
+          expect(opened).toEqual({
+            ok: true,
+            value: {
+              opened: true,
+              streamId,
+              threadId: 'thr_1',
+              ...(row.expectTruncated ? { replayTruncated: true } : {}),
+            },
+          })
+          if (!row.expectTruncated && opened.ok) {
+            expect('replayTruncated' in (opened.value as Record<string, unknown>)).toBe(false)
+          }
+          if (row.mode === 'remote') {
+            expect(rpc).toHaveBeenCalledWith('codex.app.stream.open', { streamId, threadId: 'thr_1' }, signal)
+          } else {
+            expect(host?.codexOpenStream).toHaveBeenCalledWith({ streamId, threadId: 'thr_1' }, expect.any(Function), signal)
+          }
+          await runtime.handleControl('codex.stream.close', { streamId }, signal)
+        } finally {
+          ;(runtime as unknown as { connected: unknown }).connected = undefined
+          await runtime.close()
+        }
+      },
+    })), cleanupScenario1)
   })
 
   it('creates a CodeX project and selects its virtual Workspace', async () => {
@@ -1280,7 +1383,12 @@ describe('ClientModeRuntime Host account control', () => {
     await expect(handler?.('host.account.login', {
       email: 'host@example.com', password: 'correct horse battery staple',
     }, signal)).resolves.toMatchObject({ ok: true, value: { account: 'host@example.com' } })
-    expect(host.authorizeHostWithAccount).toHaveBeenCalledWith('host@example.com', 'correct horse battery staple')
+    expect(host.authorizeHostWithAccount).toHaveBeenLastCalledWith('host@example.com', 'correct horse battery staple', undefined)
+    const verification = { challenge: 'a'.repeat(43), code: '123456', serverUrl: 'https://server.example' }
+    await expect(handler?.('host.account.login', {
+      email: 'host@example.com', password: 'correct horse battery staple', verification,
+    }, signal)).resolves.toMatchObject({ ok: true })
+    expect(host.authorizeHostWithAccount).toHaveBeenLastCalledWith('host@example.com', 'correct horse battery staple', verification)
     await expect(handler?.('host.authorization.set', { enabled: true }, signal)).resolves.toMatchObject({ ok: true })
     expect(host.authorizeHostAsOwned).toHaveBeenCalledWith('client-access-token', 'owner@example.com')
     await expect(handler?.('host.authorization.set', { enabled: false }, signal)).resolves.toMatchObject({ ok: true })
@@ -1569,6 +1677,72 @@ describe('ClientModeRuntime Host account control', () => {
       error: { code: 'internal', details: { remoteCode: 'INVALID_MESSAGE' } },
     })
     await runtime.close()
+  })
+
+  it('forwards agent.acp.opencode.archive.v1 and antigravity model-load in openCursorWorkspace and createCursorWorkspace', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'dsh-client-opencode-archive-'))
+    directories.push(directory)
+    const runtime = new ClientModeRuntime(
+      config(),
+      new IdentityStore({ directory }),
+      { bindIdentity: vi.fn() } as unknown as ClientServerApi,
+      gatewayWithCarrier(),
+      logger(),
+    )
+    await runtime.start()
+    const rpc = vi.fn(async (method: string, params: Record<string, unknown>) => {
+      if (method === 'harness.transport.describe') {
+        return {
+          capabilities: [
+            'harness.remote.v1',
+            'agent.acp.opencode.v1',
+            'agent.acp.opencode.archive.v1',
+            'agent.acp.antigravity.model-load.v1',
+          ],
+        }
+      }
+      if (method === 'agent.acp.call') {
+        if (params.method === 'dsh/sessionList') return { items: [{ conversationId: 'oc-1', title: 'OC 1', createdAt: 1, updatedAt: 2 }] }
+        if (params.method === 'dsh/workspaceCreate') {
+          const inner = params.params as { path?: string; title?: string } | undefined
+          return { path: inner?.path ?? '/repo-create', ...(inner?.title ? { title: inner.title } : {}) }
+        }
+        if (params.method === 'session/new') return { sessionId: 'oc-new' }
+      }
+      throw new Error(`unexpected rpc ${method}`)
+    })
+    ;(runtime as unknown as { connected: unknown }).connected = {
+      client: { rpc, close: vi.fn(async () => undefined), getStats: () => ({ mode: 'Relay', connected: true }), onEvent: () => () => undefined },
+      target: {
+        deviceId: 'host-1', name: 'Host', platform: 'linux', publicKey: 'peer-key', fingerprint: 'PEER', trustedAt: 1,
+      },
+      transport: {},
+      features: remoteHostFeatures(),
+    }
+    const spy = vi.spyOn(AcpVirtualHarness, 'remote')
+    try {
+      await runtime.openCursorWorkspace('host-1', 'opencode:cwd:%2Frepo-open', undefined, 'opencode')
+      expect(spy).toHaveBeenLastCalledWith(
+        expect.anything(),
+        { deviceId: 'host-1', name: 'Host' },
+        'opencode',
+        ['agent.acp.antigravity.model-load.v1', 'agent.acp.opencode.archive.v1'],
+        expect.anything(),
+        expect.anything(),
+      )
+      await runtime.createCursorWorkspace('host-1', '/repo-create', undefined, 'opencode')
+      expect(spy).toHaveBeenLastCalledWith(
+        expect.anything(),
+        { deviceId: 'host-1', name: 'Host' },
+        'opencode',
+        ['agent.acp.antigravity.model-load.v1', 'agent.acp.opencode.archive.v1'],
+        expect.anything(),
+        expect.anything(),
+      )
+    } finally {
+      spy.mockRestore()
+      await runtime.close()
+    }
   })
 })
 

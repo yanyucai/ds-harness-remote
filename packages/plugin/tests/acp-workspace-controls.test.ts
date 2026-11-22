@@ -51,7 +51,9 @@ it('ACP reconfiguration stops changed backends despite failed cleanup and retrie
       expect(old.close).toHaveBeenCalledTimes(1)
       expect(other.close).not.toHaveBeenCalled()
       expect(gateway.availableBackends()).toEqual(['antigravity'])
-      await expect(peer.call({ method: 'initialize', params: { backend: 'cursor' } })).rejects.toMatchObject({ code: 'CURSOR_UNAVAILABLE' })
+      await expect(peer.call({ method: 'initialize', params: { backend: 'cursor' } })).rejects.toMatchObject({
+        code: action === 'disable' ? 'ACP_BACKEND_DISABLED' : 'CURSOR_UNAVAILABLE',
+      })
       await expect(peer.call({ method: 'initialize', params: { backend: 'antigravity' } })).resolves.toMatchObject({ backend: 'antigravity' })
       // Startup while cleanup remains pending cannot resurrect the old backend
       // or launch its replacement ahead of successful process cleanup.
@@ -107,8 +109,18 @@ it('ACP tools enforce session authority, containment, terminal ownership and str
       await expect(peer.openStream({ streamId: 'wrong-scope', sessionId: 'native-1', tool: { backend, endpoint: 'workspaceFiles/changes', args: { workspaceFileScopeId: wrongBackendScope } } })).rejects.toMatchObject({ code: 'PERMISSION_DENIED' })
       await expect(other.call({ method: 'dsh/toolCall', params: { backend, sessionId: 'native-1', endpoint: 'terminal/list', args: { sessionId: scope } } })).rejects.toMatchObject({ code: 'CURSOR_SESSION_OWNED' })
       await peer.openStream({ streamId: 'files-1', sessionId: 'native-1', tool: { backend, endpoint: 'workspaceFiles/changes', args: { workspaceFileScopeId: scope } } })
-      await writeFile(join(cwd, 'a.txt'), 'changed')
-      await vi.waitFor(() => expect(frames).toContainEqual({ event: 'agent.acp.frame', data: expect.objectContaining({ streamId: 'files-1', frame: { method: 'dsh/workspaceTool', params: { value: expect.objectContaining({ kind: 'change' }) } } }) }))
+      // macOS can miss a write made before the native watcher finishes starting.
+      let revision = 0
+      await vi.waitFor(async () => {
+        await writeFile(join(cwd, 'a.txt'), `revision ${++revision}`)
+        expect(frames).toContainEqual({
+          event: 'agent.acp.frame',
+          data: expect.objectContaining({
+            streamId: 'files-1',
+            frame: { method: 'dsh/workspaceTool', params: { value: expect.objectContaining({ kind: 'change' }) } },
+          }),
+        })
+      })
       peer.closeStream({ streamId: 'files-1' })
       const termArgs = { agentId: scope, id: 'term-1', attachmentId: 'attachment-1' }
       await call('terminal/create', { agentId: scope, request: { id: 'term-1', cols: 80, rows: 24 } })

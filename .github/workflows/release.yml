@@ -4,10 +4,10 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'TUI prerelease version (for example 0.6.4-tui.1); publishes to tui-test'
+        description: 'TUI version: current stable to recover its Release asset, or <base>-tui.N for tui-test'
         required: true
         type: string
-        default: '0.6.4-tui.1'
+        default: '0.6.5'
   push:
     tags:
       - "v*"
@@ -26,8 +26,10 @@ env:
 
 jobs:
   tui-manual:
-    if: github.event_name == 'workflow_dispatch'
-    name: Publish TUI prerelease without a tag
+    # Publishes to npm under the project's own package name, so it must never
+    # run from a fork.
+    if: github.event_name == 'workflow_dispatch' && github.repository == 'liguobao/ds-harness-remote'
+    name: Publish or recover TUI package
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -49,6 +51,7 @@ jobs:
           const manifest = JSON.parse(readFileSync(file, 'utf8'))
           const base = JSON.parse(readFileSync('packages/plugin/package.json', 'utf8')).version
           const version = process.env.TUI_VERSION
+          if (version === base) process.exit(0)
           if (!version.startsWith(`${base}-tui.`) || !/^\d+\.\d+\.\d+-tui\.[1-9]\d*$/.test(version)) {
             throw new Error(`Expected ${base}-tui.<positive integer>`)
           }
@@ -59,14 +62,38 @@ jobs:
       - name: Verify dependency and publish
         env:
           TUI_VERSION: ${{ inputs.version }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           BASE_VERSION="$(node -p "require('./packages/plugin/package.json').version")"
           npm view "ds-harness-remote@$BASE_VERSION" version
-          npm pack ./packages/tui --dry-run
-          npm publish ./packages/tui --access public --provenance --tag tui-test
+          if npm view "ds-harness-remote-tui@$TUI_VERSION" version >/dev/null 2>&1; then
+            echo "TUI version already published."
+            exit 0
+          fi
+          if [ "$TUI_VERSION" = "$BASE_VERSION" ]; then
+            mkdir -p release-assets
+            gh release download "v$BASE_VERSION" --pattern "ds-harness-remote-tui-$BASE_VERSION.tgz" --pattern SHA256SUMS.txt --dir release-assets
+            (cd release-assets && sha256sum --check --ignore-missing SHA256SUMS.txt)
+            tar -xOf "release-assets/ds-harness-remote-tui-$BASE_VERSION.tgz" package/package.json > release-assets/tui-manifest.json
+            node --input-type=module <<'NODE'
+          import assert from 'node:assert/strict'
+          import { readFileSync } from 'node:fs'
+          const manifest = JSON.parse(readFileSync('release-assets/tui-manifest.json', 'utf8'))
+          assert.equal(manifest.name, 'ds-harness-remote-tui')
+          assert.equal(manifest.version, process.env.TUI_VERSION)
+          assert.equal(manifest.dependencies['ds-harness-remote'], process.env.TUI_VERSION)
+          NODE
+            npm publish "./release-assets/ds-harness-remote-tui-$BASE_VERSION.tgz" --access public --provenance --tag latest
+          else
+            npm pack ./packages/tui --dry-run
+            npm publish ./packages/tui --access public --provenance --tag tui-test
+          fi
 
   release:
-    if: github.event_name == 'push'
+    # Publishes to npm and creates a GitHub Release, so it is restricted to the
+    # upstream repository. A fork tagging v* gets the CI build verification
+    # instead, which needs no credentials.
+    if: github.event_name == 'push' && github.repository == 'liguobao/ds-harness-remote'
     name: Build and publish release
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -98,7 +125,19 @@ jobs:
           const tui = await readJson('packages/tui/package.json')
           const androidPackage = await readJson('apps/android/package.json')
           const androidApp = await readJson('apps/android/app.json')
-          const versions = new Set([root.version, plugin.version, tui.version, androidPackage.version, androidApp.expo?.version])
+          const iosPackage = await readJson('apps/ios/package.json')
+          const iosApp = await readJson('apps/ios/app.json')
+          const appCore = await readJson('packages/app-core/package.json')
+          const versions = new Set([
+            root.version,
+            plugin.version,
+            tui.version,
+            androidPackage.version,
+            androidApp.expo?.version,
+            iosPackage.version,
+            iosApp.expo?.version,
+            appCore.version,
+          ])
           if (tui.dependencies['ds-harness-remote'] !== `workspace:${plugin.version}`) {
             throw new Error('TUI must depend on the matching Remote workspace version.')
           }
@@ -108,9 +147,12 @@ jobs:
             throw new Error(`Release versions do not match: ${[...versions].join(', ')}`)
           }
           const androidBuild = androidApp.expo?.android?.versionCode
-          const iosBuild = androidApp.expo?.ios?.buildNumber
+          const iosBuild = iosApp.expo?.ios?.buildNumber
           if (androidBuild === undefined || iosBuild === undefined || String(androidBuild) !== String(iosBuild)) {
             throw new Error('Android versionCode and iOS buildNumber must match for a release.')
+          }
+          if (androidApp.expo?.ios !== undefined) {
+            throw new Error('apps/android/app.json must not declare an ios section; apps/ios/app.json owns it.')
           }
           if (process.env.GITHUB_REF_NAME !== expectedTag) {
             throw new Error(`Expected tag ${expectedTag}, received ${process.env.GITHUB_REF_NAME}`)
@@ -182,18 +224,23 @@ jobs:
         run: echo '::warning::npm publish failed; GitHub Packages, GitHub Release, and Android APK publication will continue. Retry this tag after refreshing npm registry credentials.'
 
       - name: Publish npm TUI
+        id: npm-tui-publish
+        continue-on-error: true
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
           if npm view "ds-harness-remote@$VERSION" >/dev/null 2>&1; then
             if npm view "ds-harness-remote-tui@$VERSION" >/dev/null 2>&1; then
               echo "TUI version already exists on npm, skip publish."
             else
-              npm publish "release-assets/ds-harness-remote-tui-$VERSION.tgz" --access public --provenance
+              npm publish "./release-assets/ds-harness-remote-tui-$VERSION.tgz" --access public --provenance
             fi
           else
-            echo '::error::Publish ds-harness-remote before its matching TUI package.'
-            exit 1
+            echo '::warning::Skipping TUI publication because its matching Remote version is unavailable on npm. GitHub Release and Android APK publication will continue.'
           fi
+
+      - name: Report npm TUI publish failure
+        if: steps.npm-tui-publish.outcome == 'failure'
+        run: echo '::warning::TUI npm publish failed; GitHub Packages, GitHub Release, and Android APK publication will continue. Retry after the matching Remote package is available and npm publishing is authorized.'
 
       - name: Publish GitHub Packages plugin
         env:
@@ -243,6 +290,13 @@ jobs:
           fail_on_unmatched_files: true
           body_path: .github/release-notes.md
           generate_release_notes: false
+
+  harmony-hap:
+    name: Build and attach unsigned HarmonyOS HAP
+    needs: release
+    uses: ./.github/workflows/harmony-hap.yml
+    permissions:
+      contents: write
 
   android-apk:
     name: Build and attach Android APK
@@ -301,7 +355,7 @@ jobs:
       - name: Verify bundled Android renderers
         env:
           DSH_REQUIRE_INTELLIGENT_UI: 'true'
-        run: node apps/android/scripts/verify-intelligent-ui-renderer.mjs
+        run: node packages/app-core/scripts/verify-intelligent-ui-renderer.mjs
 
       - name: Generate Android project
         run: pnpm --dir apps/android exec expo prebuild --platform android --no-install
@@ -330,3 +384,56 @@ jobs:
           tag_name: ${{ github.ref_name }}
           files: artifacts/android/dsh-remote-android-${{ github.ref_name }}.apk
           fail_on_unmatched_files: true
+
+  server-image:
+    name: Build and publish Server container
+    # Moved from ci.yml when CI stopped triggering on tags: the container image
+    # is a release artifact and belongs with the tag-driven publish flow.
+    # Restricted to the upstream repository; a fork tag skips it.
+    if: github.event_name == 'push' && github.repository == 'liguobao/ds-harness-remote'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up QEMU for ARM64
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Extract container metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}/server
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest
+            type=sha,prefix=sha-
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build Server image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: apps/server/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

@@ -1,0 +1,111 @@
+name: HarmonyOS HAP
+
+# SDK jobs run only for reviewed manual builds or the upstream release workflow.
+# Do not run untrusted fork pull requests on a self-hosted runner.
+on:
+  workflow_dispatch:
+    inputs:
+      build_mode:
+        description: Build mode
+        type: choice
+        options: [release, debug]
+        default: release
+      signed:
+        description: Sign with repository secrets (trusted code only)
+        type: boolean
+        default: false
+  workflow_call:
+
+permissions:
+  contents: write
+
+jobs:
+  hap:
+    if: github.repository == 'liguobao/ds-harness-remote'
+    name: Build HAP with HarmonyOS SDK
+    runs-on: [self-hosted, harmonyos]
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: apps/harmony
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Verify the HarmonyOS toolchain
+        run: |
+          if [ -f "$HOME/.config/harmony-env.sh" ]; then
+            . "$HOME/.config/harmony-env.sh"
+            printf '%s\n' "$HARMONY_CLT/bin" "$HARMONY_CLT/hvigor/bin" "$JAVA_HOME/bin" >> "$GITHUB_PATH"
+            printf 'DEVECO_SDK_HOME=%s\nJAVA_HOME=%s\n' "$DEVECO_SDK_HOME" "$JAVA_HOME" >> "$GITHUB_ENV"
+          fi
+          command -v hvigorw
+          command -v ohpm
+          hvigorw --version
+          node --version
+
+      - uses: pnpm/action-setup@v6
+
+      - name: Build the shared terminal renderer
+        run: |
+          pnpm --dir ../.. --filter @dsh-remote/app-core install --frozen-lockfile
+          node ../../packages/app-core/scripts/build-terminal.mjs entry/src/main/resources/rawfile/terminal.html
+
+      - name: Install HarmonyOS dependencies
+        run: ohpm install --all
+
+      - name: Configure unsigned validation build
+        if: github.event_name != 'workflow_dispatch' || !inputs.signed
+        run: node scripts/inject-signing.mjs --unsigned
+
+      - name: Inject release signing material
+        if: github.event_name == 'workflow_dispatch' && inputs.signed
+        env:
+          HARMONY_SIGNING_STORE_B64: ${{ secrets.HARMONY_SIGNING_STORE_B64 }}
+          HARMONY_SIGNING_STORE_PASSWORD: ${{ secrets.HARMONY_SIGNING_STORE_PASSWORD }}
+          HARMONY_SIGNING_KEY_ALIAS: ${{ secrets.HARMONY_SIGNING_KEY_ALIAS }}
+          HARMONY_SIGNING_KEY_PASSWORD: ${{ secrets.HARMONY_SIGNING_KEY_PASSWORD }}
+          HARMONY_SIGNING_CERT_B64: ${{ secrets.HARMONY_SIGNING_CERT_B64 }}
+          HARMONY_SIGNING_PROFILE_B64: ${{ secrets.HARMONY_SIGNING_PROFILE_B64 }}
+        run: |
+          umask 077
+          export HARMONY_SIGNING_SOURCE_DIR="$HOME/.config/dsh-remote/harmony-signing"
+          node scripts/inject-signing.mjs
+
+      - name: Build HAP
+        env:
+          BUILD_MODE: ${{ inputs.build_mode || 'release' }}
+        run: hvigorw --no-daemon assembleHap -p product=default -p buildMode="$BUILD_MODE"
+
+      - name: Upload HAP artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: harmony-hap
+          path: apps/harmony/entry/build/default/outputs/default/*.hap
+          if-no-files-found: error
+
+      - name: Stage unsigned release HAP
+        if: github.event_name == 'push'
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          mkdir -p build/release-assets
+          haps=(entry/build/default/outputs/default/*-unsigned.hap)
+          test "${#haps[@]}" -eq 1 && test -f "${haps[0]}"
+          cp "${haps[0]}" "build/release-assets/dsh-remote-harmony-${RELEASE_TAG}-unsigned.hap"
+
+      - name: Attach HAP to GitHub Release
+        if: github.event_name == 'push'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          files: apps/harmony/build/release-assets/*.hap
+          fail_on_unmatched_files: true
+
+      - name: Remove signing material and restore profile
+        if: always()
+        run: |
+          rm -rf .signing
+          git restore -- build-profile.json5

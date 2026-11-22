@@ -71,6 +71,23 @@ describe('TranscriptWatcher', () => {
     watcher.stop()
   })
 
+  it('dispatches each record once when multiple flushes overlap', async () => {
+    const watcher = new TranscriptWatcher(conversationId, testDir)
+    const steps: number[] = []
+    watcher.on('step', step => steps.push(step.step_index))
+    const transcriptFile = join(brainDir, 'transcript.jsonl')
+
+    try {
+      for (const stepIndex of [1, 2]) {
+        await fs.appendFile(transcriptFile, `${JSON.stringify({ step_index: stepIndex, type: 'USER_INPUT' })}\n`)
+        await Promise.all(Array.from({ length: 8 }, () => watcher.flush()))
+      }
+      expect(steps).toEqual([1, 2])
+    } finally {
+      watcher.stop()
+    }
+  })
+
   it('enriches truncated fields from transcript_full.jsonl', async () => {
     const watcher = new TranscriptWatcher(conversationId, testDir)
     const messages: string[] = []
@@ -103,6 +120,45 @@ describe('TranscriptWatcher', () => {
     await watcher.flush()
 
     expect(messages).toEqual(['Very long full content that was truncated in compact log'])
+    watcher.stop()
+  })
+
+  it('decodes multi-byte UTF-8 characters split across read chunks and resets decoder on reset/stop (#466)', async () => {
+    const watcher = new TranscriptWatcher(conversationId, testDir)
+    const messages: string[] = []
+    watcher.on('message', e => messages.push(e.text))
+
+    const transcriptFile = join(brainDir, 'transcript.jsonl')
+    const lineBytes = Buffer.from(`${JSON.stringify({
+      step_index: 1,
+      type: 'USER_INPUT',
+      content: '你好世界🚀🎉',
+    })}\n`, 'utf-8')
+    // Split directly inside a multi-byte UTF-8 sequence (middle of '你好世界🚀🎉').
+    const emojiOffset = lineBytes.indexOf(Buffer.from('🚀', 'utf-8'))
+    const splitPoint = emojiOffset + 2
+
+    await fs.writeFile(transcriptFile, lineBytes.subarray(0, splitPoint))
+    await watcher.flush()
+    expect(messages).toEqual([])
+
+    await fs.appendFile(transcriptFile, lineBytes.subarray(splitPoint))
+    await watcher.flush()
+    expect(messages).toEqual(['你好世界🚀🎉'])
+
+    // Writing an incomplete multi-byte prefix followed by reset() must not corrupt the next read.
+    const nextLine = Buffer.from(`${JSON.stringify({
+      step_index: 2,
+      type: 'USER_INPUT',
+      content: '干净重启',
+    })}\n`, 'utf-8')
+    await fs.appendFile(transcriptFile, Buffer.from([0xf0, 0x9f]))
+    await watcher.flush()
+    watcher.reset()
+    await fs.writeFile(transcriptFile, nextLine)
+    await watcher.flush()
+    expect(messages).toEqual(['你好世界🚀🎉', '干净重启'])
+
     watcher.stop()
   })
 })

@@ -1,5 +1,5 @@
 import { runScenarios } from '../../../scripts/test-scenarios.mjs'
-import { mkdtemp, readFile, rm, stat } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, stat } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { generateKeyPair } from '@dsh-remote/crypto'
@@ -16,6 +16,59 @@ const cleanupContract1 = async () => {
 afterEach(cleanupContract1)
 
 describe('HostServerApi', () => {
+  it('waits to register until account verification succeeds on the issuing Server', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'dsh-server-2fa-'))
+    directories.push(directory)
+    const identity = hostIdentity()
+    const serverUrl = 'https://dsh.r2049.cn'
+    const challenge = 'A'.repeat(43)
+    const verification = { challenge, serverUrl, code: 'recovery-code' }
+    const account = 'host@example.com'
+    const fetchMock = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(json({ twoFactorRequired: true, challenge }))
+      .mockResolvedValueOnce(errorJson('TWO_FACTOR_INVALID', 'Invalid code', 400))
+      .mockResolvedValueOnce(json({ token: 'web-account-token-value', expiresAt: 123456, account, isAdmin: false }))
+      .mockResolvedValueOnce(json(tokens()))
+    const api = new HostServerApi(serverUrl, new ServerCredentialStore(directory), fetchMock)
+
+    await expect(api.authorizeWithAccount(identity, account, 'password')).rejects.toMatchObject({
+      code: 'TWO_FACTOR_REQUIRED', challenge, serverUrl,
+    })
+    await expect(api.authorizeWithAccount(identity, '', '', undefined, { ...verification, serverUrl: 'https://other.example' }))
+      .rejects.toMatchObject({ code: 'TWO_FACTOR_EXPIRED' })
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    await expect(api.authorizeWithAccount(identity, '', '', undefined, verification))
+      .rejects.toMatchObject({ code: 'TWO_FACTOR_INVALID' })
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    await expect(api.authorizeWithAccount(identity, '', '', undefined, verification))
+      .resolves.toMatchObject({ method: 'account', account })
+    expect(fetchMock.mock.calls.map(([url]) => String(url))).toEqual([
+      serverUrl + '/api/v1/auth/login',
+      serverUrl + '/api/v1/auth/2fa/verify',
+      serverUrl + '/api/v1/auth/2fa/verify',
+      serverUrl + '/api/v1/devices/register',
+    ])
+    expect(JSON.parse(String(fetchMock.mock.calls[2]?.[1]?.body))).toEqual({ challenge, code: 'recovery-code' })
+  })
+
+  it('reports a directory refresh lock without making an authentication request', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'dsh-server-directory-lock-'))
+    directories.push(directory)
+    await mkdir(join(directory, 'server-credentials.json.refresh-lock'))
+    const identity = hostIdentity()
+    const store = new ServerCredentialStore(directory)
+    await store.save({
+      serverUrl: 'https://dsh.r2049.cn',
+      deviceId: identity.deviceId,
+      authorizationMethod: 'account',
+      ...tokens({ accessTokenExpiresAt: Date.now() - 1 }),
+    })
+    const fetchMock = vi.fn<typeof fetch>()
+    const api = new HostServerApi('https://dsh.r2049.cn', store, fetchMock)
+    await expect(api.authenticate(identity)).rejects.toMatchObject({ code: 'SERVER_CREDENTIALS_LOCK_DIRECTORY', retryable: false })
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
   it('cancels runtime-owned HTTP work through response consumption and rejects requests after close', async () => {
     await runScenarios([
       { name: 'close before response headers', body: false, timeout: false },

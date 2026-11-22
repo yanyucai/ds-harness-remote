@@ -1,6 +1,6 @@
-import { sessionImageLimits, validatePromptImages } from '../../android/src/screens/chat-images'
-import { imagePreviewMetadata } from '../../android/src/services/image-preview-metadata'
-import type { RemoteSession, ImageMediaType } from '../../android/src/types'
+import { sessionImageLimits, validatePromptImages } from '../../../packages/app-core/src/screens/chat-images'
+import { imagePreviewMetadata } from '../../../packages/app-core/src/services/image-preview-metadata'
+import type { RemoteSession, ImageMediaType } from '../../../packages/app-core/src/types'
 
 export function imageInputLimits(session?: RemoteSession) {
   const limits = session && sessionImageLimits(session)

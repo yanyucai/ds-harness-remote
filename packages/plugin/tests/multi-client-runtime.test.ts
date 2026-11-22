@@ -214,7 +214,7 @@ describe('HostPluginRuntime multi-Client routing', () => {
         return ((response!.payload as RpcResponsePayload).result as { capabilities: string[] }).capabilities
       }
       const missing = await describe()
-      expect(dispatch).toHaveBeenCalledWith('session/list', { args: { _request: {} } }, expect.any(AbortSignal))
+      expect(dispatch).toHaveBeenCalledWith('session/list', { args: { __remoteCapabilityProbe: true } }, expect.any(AbortSignal))
       expect(missing.some(value => value.startsWith('harness.remote.'))).toBe(false)
       expect(missing).not.toContain('harness.remote.stream.transfer.v1')
       await expect(probeRemoteHostFeatures({ rpc: async () => ({ capabilities: missing }) } as never))
@@ -226,11 +226,44 @@ describe('HostPluginRuntime multi-Client routing', () => {
     } finally { await runtime.close() }
   })
 
+  it('discovers capabilities for concurrent Clients without reading persisted sessions', async () => {
+    const gateway = localGateway()
+    const readSessions = vi.fn(() => new Promise<TypertRpcResult>(() => {}))
+    vi.mocked(gateway.dispatch).mockImplementation(async (endpoint, payload) => {
+      if (endpoint === 'session/list' && (payload as { args: object }).args
+        && '__remoteCapabilityProbe' in (payload as { args: object }).args) {
+        return { ok: false, error: { code: 'gateway/arguments-invalid', message: 'Unknown argument', details: {} } }
+      }
+      return readSessions()
+    })
+    const runtime = new HostPluginRuntime(config(), identities(), logger(), gateway)
+    const channels = [fakeChannel('slow-history-phone', 'phone'), fakeChannel('slow-history-tablet', 'tablet')]
+    try {
+      await runtime.start()
+      for (const channel of channels) await runtime.acceptAuthenticatedPeer(channel)
+      const requests = channels.map(channel => {
+        const request = createRpcRequest('harness.transport.describe', {})
+        channel.push(request)
+        return request
+      })
+      await vi.waitFor(() => {
+        for (const [index, channel] of channels.entries()) {
+          const response = channel.sent().find(row => row.type === 'rpc.response'
+            && (row.payload as RpcResponsePayload).requestId === requests[index]!.id)
+          expect(response).toBeDefined()
+          const capabilities = ((response!.payload as RpcResponsePayload).result as { capabilities: string[] }).capabilities
+          expect(capabilities.some(value => value === 'harness.remote.v1' || value === 'harness.remote.v3')).toBe(true)
+        }
+      })
+      expect(readSessions).not.toHaveBeenCalled()
+    } finally { await runtime.close() }
+  })
+
   it('runs /compact as a Host-owned operation with idempotent submission and status', async () => {
     const gateway = localGateway()
     let release!: (value: TypertRpcResult) => void
     vi.mocked(gateway.dispatch).mockImplementation(async (endpoint: string) => {
-      if (endpoint === 'session/list') return { ok: true as const, value: [] }
+      if (endpoint === 'session/list') return { ok: false as const, error: { code: 'gateway/arguments-invalid', message: 'Unknown argument', details: {} } }
       if (endpoint === 'commands/execute') {
         return await new Promise(resolve => { release = resolve })
       }
@@ -280,9 +313,10 @@ describe('HostPluginRuntime multi-Client routing', () => {
       { name: 'service unavailable', answer: { ok: false as const, error: {
         code: 'gateway/service-unavailable', message: 'Service unavailable', details: {},
       } }, message: 'The Host Session API is not ready.' },
-      { name: 'invalid arguments', answer: { ok: false as const, error: {
-        code: 'gateway/arguments-invalid', message: 'Invalid arguments', details: {},
+      { name: 'internal failure', answer: { ok: false as const, error: {
+        code: 'gateway/internal', message: 'Internal failure', details: {},
       } }, message: 'Cannot verify the Host Session API.' },
+      { name: 'unexpected success', answer: { ok: true as const }, message: 'The Host Gateway did not reject the Session API probe.' },
       { name: 'timeout', answer: new DOMException('Timed out', 'TimeoutError'), message: 'Cannot verify the Host Session API.' },
     ].map(({ name, answer, message }) => ({ name, run: async () => {
       const gateway = localGateway()
@@ -607,6 +641,141 @@ describe('HostPluginRuntime multi-Client routing', () => {
       await Promise.all(servers.map(server => new Promise<void>(resolve => server.close(() => resolve()))))
     }
   })
+
+  it('resolves runtime.start() after codexStartupGraceMs without unhandled rejection while fast startup still advertises codex.appserver.v1', async () => {
+    await runScenarios(['slow-resolves-after-grace', 'slow-rejects-after-grace', 'fast-startup'].map(mode => ({
+      name: mode,
+      run: async () => {
+        const settings = { ...config(), codex: { enabled: true, binary: '/test/codex' } }
+        const log = logger()
+        const runtime = new HostPluginRuntime(
+          settings,
+          identities(),
+          log,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          50,
+        )
+        let ready = false
+        let releaseAppStart!: () => void
+        const appStartGate = new Promise<void>(resolve => { releaseAppStart = resolve })
+        const app: CodexAppServerLike = {
+          start: vi.fn(async () => {
+            if (mode === 'slow-resolves-after-grace') await appStartGate
+            ready = true
+          }),
+          isReady: () => ready,
+          call: vi.fn(async method => {
+            if (method === 'account/read') return { requiresOpenaiAuth: true, account: { type: 'chatgpt' } }
+            throw new Error(`Unexpected Codex call: ${method}`)
+          }),
+          respond: vi.fn(async () => undefined),
+          respondError: vi.fn(async () => undefined),
+          onInbound: () => () => undefined,
+          onUnavailable: () => () => undefined,
+          close: vi.fn(async () => { ready = false }),
+        }
+        const codexDomain = new CodexRemoteDomain(settings.codex, log, () => app)
+        ;(runtime as unknown as { codex: CodexRemoteDomain }).codex = codexDomain
+        let rejectCodexStart!: (error: Error) => void
+        if (mode === 'slow-rejects-after-grace') {
+          vi.spyOn(codexDomain, 'start').mockImplementation(
+            () => new Promise<void>((_resolve, reject) => { rejectCodexStart = reject }),
+          )
+        }
+
+        const unhandled: unknown[] = []
+        const onUnhandled = (reason: unknown) => { unhandled.push(reason) }
+        process.on('unhandledRejection', onUnhandled)
+        const channel = fakeChannel(`grace-${mode}`, 'client-phone')
+        const describe = async () => {
+          const request = createRpcRequest('harness.transport.describe', {})
+          channel.push(request)
+          for (let i = 0; i < 10; i += 1) {
+            const response = channel.sent().find(message => message.type === 'rpc.response'
+              && (message.payload as RpcResponsePayload).requestId === request.id)
+            if (response !== undefined) {
+              return (response.payload as RpcResponsePayload).result as {
+                capabilities: string[]
+                workspaceTypes: unknown[]
+              }
+            }
+            await Promise.resolve()
+          }
+          throw new Error('harness.transport.describe response not received')
+        }
+
+        vi.useFakeTimers()
+        try {
+          let startSettled = false
+          const startPromise = runtime.start().then(() => { startSettled = true })
+          if (mode === 'fast-startup') {
+            await vi.advanceTimersByTimeAsync(0)
+            await startPromise
+            expect(startSettled).toBe(true)
+            expect(log.info).not.toHaveBeenCalledWith('Codex initialization continuing in background after startup grace')
+            await runtime.acceptAuthenticatedPeer(channel)
+            const initial = await describe()
+            expect(initial.capabilities).toContain('codex.appserver.v1')
+            expect(initial.capabilities).toContain('codex.appserver.transfer.v1')
+          } else {
+            await vi.advanceTimersByTimeAsync(49)
+            expect(startSettled).toBe(false)
+            await vi.advanceTimersByTimeAsync(1)
+            await startPromise
+            expect(startSettled).toBe(true)
+            expect(log.info).toHaveBeenCalledWith('Codex initialization continuing in background after startup grace')
+
+            await runtime.acceptAuthenticatedPeer(channel)
+            const beforeReady = await describe()
+            expect(beforeReady.capabilities).not.toContain('codex.appserver.v1')
+
+            if (mode === 'slow-resolves-after-grace') {
+              releaseAppStart()
+              await vi.advanceTimersByTimeAsync(0)
+              const afterReady = await describe()
+              expect(afterReady.capabilities).toContain('codex.appserver.v1')
+              expect(afterReady.capabilities).toContain('codex.appserver.transfer.v1')
+            } else {
+              rejectCodexStart(new CodexAppServerError('CODEX_START_FAILED', 'background start failed'))
+              await vi.advanceTimersByTimeAsync(0)
+              expect(unhandled).toEqual([])
+            }
+          }
+        } finally {
+          releaseAppStart()
+          await runtime.close()
+          vi.useRealTimers()
+          process.off('unhandledRejection', onUnhandled)
+        }
+      },
+    })))
+  })
+
+  it('triggers codex.tryRecoverOnDemand on reconnectHost only after verifying serverConnection is configured', async () => {
+    const runtime = new HostPluginRuntime({ ...config(), codex: { enabled: true, binary: '/test/codex' } }, identities(), logger())
+    const recoverSpy = vi.spyOn((runtime as unknown as { codex: CodexRemoteDomain }).codex, 'tryRecoverOnDemand')
+    const reconnect = vi.fn()
+    try {
+      expect(() => runtime.reconnectHost()).toThrow('Configure serverUrl before reconnecting.')
+      expect(recoverSpy).not.toHaveBeenCalled()
+
+      ;(runtime as unknown as { serverConnection: { reconnect: () => void; stop: () => Promise<void> } }).serverConnection = {
+        reconnect,
+        stop: async () => undefined,
+      }
+      runtime.reconnectHost()
+      expect(recoverSpy).toHaveBeenCalledTimes(1)
+      expect(reconnect).toHaveBeenCalledTimes(1)
+    } finally {
+      await runtime.close()
+    }
+  })
 })
 
 async function peerRpc<T = unknown>(channel: ReturnType<typeof fakeChannel>, params: unknown): Promise<T> {
@@ -666,7 +835,9 @@ function identities(): IdentityStore {
 function localGateway(): LocalTypertGateway {
   return {
     invoke: vi.fn(async () => undefined),
-    dispatch: vi.fn(async () => ({ ok: true as const })),
+    dispatch: vi.fn(async (endpoint: string) => endpoint === 'session/list'
+      ? { ok: false as const, error: { code: 'gateway/arguments-invalid', message: 'Unknown argument', details: {} } }
+      : { ok: true as const }),
     open: vi.fn(async () => (async function* () { return })()),
     failure: vi.fn(() => ({ code: 'internal', message: 'failed', details: {} })),
     supportsCarrier: true,

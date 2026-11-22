@@ -11,7 +11,7 @@ const shared = Object.fromEntries(['crypto', 'protocol', 'client-core', 'webrtc'
 const harmonyAdapters = { name: 'harmony-native-connection', setup(builder) {
   builder.onResolve({ filter: /^expo-file-system(?:\/legacy)?$/ }, () => ({ path: path.join(app, 'core/optional-file-system.ts') }))
   builder.onResolve({ filter: /(?:native-(?:chacha-poly|rtc-binary|websocket-binary)|compaction-store)$/ }, args => {
-    if (!args.importer.includes('/android/src/services/')) return
+    if (!args.importer.includes('/packages/app-core/src/services/')) return
     return { path: path.join(app, 'core', args.path.endsWith('compaction-store') ? 'compaction-store.ts' : 'native-connection.ts') }
   })
 } }

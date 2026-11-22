@@ -1,8 +1,8 @@
-import { highlightCode, DARK_CODE_PALETTE, LIGHT_CODE_PALETTE } from '../../android/src/ui/syntax-highlight'
-import { normalizeChatAppearance, resolveChatMetrics, CHAT_ACCENT_SWATCHES } from '../../android/src/ui/theme'
+import { highlightCode, DARK_CODE_PALETTE, LIGHT_CODE_PALETTE } from '../../../packages/app-core/src/ui/syntax-highlight'
+import { normalizeChatAppearance, resolveChatMetrics, CHAT_ACCENT_SWATCHES } from '../../../packages/app-core/src/ui/theme'
 import MarkdownIt from 'markdown-it'
-import { installMath } from '../../android/src/ui/markdown-math'
-import { renderMathSvg } from '../../android/src/ui/math-svg'
+import { installMath } from '../../../packages/app-core/src/ui/markdown-math'
+import { renderMathSvg } from '../../../packages/app-core/src/ui/math-svg'
 const send = value => window.ReactNativeWebView.postMessage(JSON.stringify(value))
 const md = new MarkdownIt({ html: false, linkify: true, breaks: true })
 installMath(md)

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { imageInputLimits, validateImageInput } from '../core/image-input'
-import type { RemoteSession } from '../../android/src/types'
+import type { RemoteSession } from '../../../packages/app-core/src/types'
 const session = (backend = 'harness', limits?: object) => ({ backend, projections: { values: { imageLimits: limits } } }) as RemoteSession
 function png(width = 100, height = 100) {
   const bytes = new Uint8Array(24)

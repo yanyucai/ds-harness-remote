@@ -1,5 +1,5 @@
-import type { SessionTools } from '../../android/src/services/session-tools'
-import { loadWorkspaceDownload } from '../../android/src/services/workspace-file-preview'
+import type { SessionTools } from '../../../packages/app-core/src/services/session-tools'
+import { loadWorkspaceDownload } from '../../../packages/app-core/src/services/workspace-file-preview'
 
 /** Read only through the existing authenticated, version-checked file protocol. */
 export class DownloadTask {

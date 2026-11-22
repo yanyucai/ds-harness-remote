@@ -5,7 +5,7 @@ import { startResidentTask, stopResidentTask, residentTaskActive } from '../core
 import nativeBackground from '@ohos.resourceschedule.backgroundTaskManager'
 import { cancelResident } from './native/background'
 import wantAgent from '@ohos.app.ability.wantAgent'
-import type { SessionTools } from '../../android/src/services/session-tools'
+import type { SessionTools } from '../../../packages/app-core/src/services/session-tools'
 
 const task = (id: string, rest: Partial<ObservedTask> = {}): ObservedTask => ({ id, title: id, watched: true, running: false, inputIds: [], updatedAt: 0, summary: '', ...rest })
 afterEach(async () => { await stopResidentTask({}); vi.restoreAllMocks() })

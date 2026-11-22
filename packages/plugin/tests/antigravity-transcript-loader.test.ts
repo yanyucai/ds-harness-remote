@@ -1,7 +1,8 @@
 import { runScenarios } from '../../../scripts/test-scenarios.mjs'
 import { createRequire } from 'node:module'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { mkdtemp, mkdir, writeFile, rm, utimes, symlink } from 'node:fs/promises'
+import { mkdtemp, mkdir, writeFile, rm, utimes, symlink, truncate } from 'node:fs/promises'
+import { MAX_AGENT_ACP_TRANSFER_BYTES } from '@dsh-remote/protocol'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { pathToFileURL } from 'node:url'
@@ -108,6 +109,63 @@ describe('TranscriptLoader', () => {
               { name: 'view_file', callId: '2:view_file' },
               { name: 'tool', callId: '2:tool' },
             ])
+            const toolResults = events.filter((e) => e.event.type === 'tool/result')
+            expect(toolResults.map((e) => e.event.data)).toMatchObject([
+              { message: { source: { kind: 'tool', callId: '2:view_file' }, content: [{ type: 'tool-result', toolCallId: '2:view_file' }] } },
+              { message: { source: { kind: 'tool', callId: '2:tool' }, content: [{ type: 'tool-result', toolCallId: '2:tool' }] } },
+            ])
+          },
+        },
+        {
+          name: 'hydrates settled tool results, error status, and disambiguates duplicate tool names per step',
+          run: async () => {
+            await writeTranscript('tool-results', [
+              { type: 'USER_INPUT', step_index: 1, created_at: createdAt, content: 'Run tools' },
+              {
+                type: 'PLANNER_RESPONSE',
+                step_index: 2,
+                created_at: createdAt,
+                tool_calls: [
+                  { name: 'run_command', args: { cmd: 'ls' }, status: 'SUCCESS', result: 'ok.txt' },
+                  { name: 'run_command', args: { cmd: 'false' }, status: 'ERROR', result: { code: 1 } },
+                  { name: 'read_file', args: {}, status: 'EXECUTING' },
+                ],
+              },
+            ])
+            const events = await loadTranscriptEvents('tool-results', 'antigravity:tool-results', base)
+            const calls = events.filter((e) => e.event.type === 'tool/call')
+            const results = events.filter((e) => e.event.type === 'tool/result')
+            expect(calls.map((e) => (e.event.data as { callId: string }).callId)).toEqual([
+              '2:run_command',
+              '2:run_command:1',
+              '2:read_file',
+            ])
+            expect(results.map((e) => e.event.data)).toMatchObject([
+              {
+                message: {
+                  source: { kind: 'tool', callId: '2:run_command' },
+                  content: [{ type: 'tool-result', toolCallId: '2:run_command', content: [{ type: 'text', text: 'ok.txt' }] }],
+                },
+              },
+              {
+                message: {
+                  source: { kind: 'tool', callId: '2:run_command:1' },
+                  content: [{ type: 'tool-result', toolCallId: '2:run_command:1', content: [{ type: 'text', text: '{"code":1}' }], isError: true }],
+                },
+              },
+            ])
+          },
+        },
+        {
+          name: 'rejects oversized transcripts with ACP_HISTORY_TOO_LARGE instead of returning empty',
+          run: async () => {
+            const path = await writeTranscript('oversized-conversation', [
+              { type: 'USER_INPUT', step_index: 1, created_at: createdAt, content: 'big' },
+            ])
+            await truncate(path, MAX_AGENT_ACP_TRANSFER_BYTES + 1)
+            await expect(
+              loadTranscriptEvents('oversized-conversation', 'antigravity:oversized-conversation', base),
+            ).rejects.toMatchObject({ code: 'ACP_HISTORY_TOO_LARGE' })
           },
         },
       ],
@@ -279,6 +337,37 @@ describe('TranscriptLoader', () => {
     expect(await loadTranscriptEvents('..\\outside-session', 'remote', brain)).toEqual([])
     expect(await loadTranscriptEvents('linked-session', 'remote', brain)).toEqual([])
     expect(await discoverAntigravitySessions('', 10, brain, join(base, 'missing.db'))).toEqual([])
+  })
+
+  it('reads transcript first lines longer than 4096 bytes with multi-byte UTF-8 and bounds oversized lines (#466)', async () => {
+    const longPrefix = '中文前缀🚀'.repeat(1000) // ~16 KB (> 4096B) crossing chunk boundaries
+    await writeTranscript('long-first-line', [
+      { type: 'USER_INPUT', step_index: 1, created_at: createdAt, content: `${longPrefix}\nrest` },
+    ])
+    await writeTranscript('oversized-first-line', [
+      { type: 'USER_INPUT', step_index: 1, created_at: createdAt, content: 'x'.repeat(260 * 1024) },
+    ])
+
+    // 1) Filesystem fallback discovery (no SQLite DB)
+    const fallbackSessions = await discoverAntigravitySessions('', 10, base, join(base, 'missing.db'))
+    expect(fallbackSessions.map(s => s.conversationId)).toEqual(['long-first-line'])
+    expect(fallbackSessions[0]?.title).toBe(longPrefix.slice(0, 40))
+
+    // 2) SQLite empty-title fallback (readTranscriptSummary)
+    const workspace = join(base, 'ws')
+    await mkdir(workspace)
+    const { db, dbPath } = createDatabase()
+    try {
+      const insert = db.prepare('INSERT INTO conversation_summaries VALUES (?, ?, ?, ?, ?)')
+      insert.run('long-first-line', '', JSON.stringify([pathToFileURL(workspace).href]), 0, createdAt)
+      insert.run('oversized-first-line', '', JSON.stringify([pathToFileURL(workspace).href]), 0, createdAt)
+    } finally {
+      db.close()
+    }
+    const dbSessions = await discoverAntigravitySessions(workspace, 10, base, dbPath)
+    expect(dbSessions).toHaveLength(1)
+    expect(dbSessions[0]?.conversationId).toBe('long-first-line')
+    expect(dbSessions[0]?.title).toBe(longPrefix.slice(0, 40))
   })
 
 })

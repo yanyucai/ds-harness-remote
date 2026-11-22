@@ -10,6 +10,7 @@ import util from '@ohos.util'
 import window from '@ohos.window'
 import promptAction from '@ohos.promptAction'
 import { AlignmentPanel } from '../components/AlignmentPanel'
+import { DshWebView } from '../components/DshWebView'
 import { LocalSurface } from '../components/LocalSurface'
 import { RtcSurface } from '../components/RtcSurface'
 import { runtime } from '../RuntimeHost'
@@ -374,6 +375,7 @@ struct Index {
   @State server: string = 'https://dsh.r2049.cn'
   @State email: string = ''
   @State password: string = ''
+  @State twoFactorCode: string = ''
   @State draft: string = ''
   @State query: string = ''
   @State directory: string = ''
@@ -427,6 +429,8 @@ struct Index {
   @State fileSaveMessage: string = ''
   @State showBots: boolean = false
   @State showNetwork: boolean = false
+  @State showDshWeb: boolean = false
+  @State dshWebError: string = ''
   @State showTerminal: boolean = false
   @State terminalInput: string = ''
   @State taskFilter: string = 'all'
@@ -501,6 +505,17 @@ struct Index {
     if (this.state.defaultPermission === 'danger-full-access') return runtime.translate('完全权限')
     return runtime.translate('默认')
   }
+  private busySendLabel(): string {
+    return runtime.translate(this.state.busySendMode === 'steer' ? '插话发送' : '排队发送')
+  }
+  private membershipLabel(): string {
+    if (this.state.membershipStatus === 'active') return runtime.translate('有效')
+    if (this.state.membershipStatus === 'expired') return runtime.translate('已过期')
+    if (this.state.membershipStatus === 'revoked') return runtime.translate('已撤销')
+    if (this.state.membershipStatus === 'none') return runtime.translate('未开通')
+    if (this.state.membershipStatus === 'unavailable') return runtime.translate('暂不可用')
+    return runtime.translate('查询中…')
+  }
   private accentItems(): AccentPresetView[] {
     return [
       { id: 'deepseek', name: '蓝', color: this.darkMode() ? '#6F89FF' : '#4D6BFE' },
@@ -555,6 +570,8 @@ struct Index {
         this.showTasks = false; this.showRecords = false; this.confirmTask = ''
         this.showBots = false
         this.showNetwork = false
+        this.showDshWeb = false
+        this.dshWebError = ''
         this.showTerminal = false
       }
     })
@@ -682,6 +699,34 @@ struct Index {
     this.showMore = true
     this.send('morePanel', {})
   }
+  private composerHasContent(): boolean {
+    return this.draft.trim().length > 0 || this.image.length > 0 || this.state.stagedFiles.length > 0
+  }
+  private toggleTrace(): void {
+    this.traceMode = !this.traceMode
+    this.traceQuery = ''
+    this.traceCategory = 'all'
+  }
+  private toggleCurrentArchive(): void {
+    if (!this.state.currentSessionId || this.state.busy || !this.state.connected) return
+    const id: string = this.state.currentSessionId
+    const unarchive: boolean = this.state.sessionArchived
+    this.showInfo = false
+    if (unarchive) {
+      this.send('unarchive', { id: id })
+      return
+    }
+    promptAction.showDialog({
+      title: runtime.translate('归档会话'),
+      message: runtime.translate('归档后，会话会从默认列表中隐藏，可在“仅已归档”中查看。'),
+      buttons: [
+        { text: runtime.translate('取消'), color: this.theme().muted },
+        { text: runtime.translate('归档'), color: this.theme().danger },
+      ],
+    }).then((result: promptAction.ShowDialogSuccessResponse) => {
+      if (result.index === 1) this.send('archive', { id: id })
+    }).catch(() => {})
+  }
   private openPrompts(): void {
     this.promptPage = ''
     this.showPrompts = true
@@ -720,6 +765,7 @@ struct Index {
     this.showPrompts = false; this.showPromptForm = true
   }
   onBackPress(): boolean {
+    if (this.showDshWeb) { this.closeDshWeb(); return true }
     if (this.showSettings && this.settingsPage.length > 0) { this.settingsPage = ''; return true }
     if (this.showHostSwitcher) { this.showHostSwitcher = false; return true }
     if (this.alignmentPanel || this.showSettings || this.showTerminal || this.showMore || this.showPlugins || this.showTasks || this.showRecords || this.showBots || this.showNetwork || this.showPrompts || this.showPromptForm || this.showChildren || this.showInfo || this.showPluginForm || this.manageTarget) { this.closePanels(); return true }
@@ -746,6 +792,25 @@ struct Index {
   private openNetwork(): void {
     this.showNetwork = true
     this.send('networkDetails', {})
+  }
+  private async openDshWeb(): Promise<void> {
+    this.dshWebError = ''
+    this.showDshWeb = true
+    const ok: boolean = await runtime.perform('openDshWeb', '{}').catch(() => false)
+    if (!ok) this.dshWebError = this.state.error || runtime.translate('无法打开 DSH Web')
+  }
+  private closeDshWeb(): void {
+    this.showDshWeb = false
+    this.dshWebError = ''
+    runtime.perform('closeDshWeb', '{}').catch(() => {})
+  }
+  private dshWebPayload(): string {
+    return JSON.stringify({
+      url: this.state.dshWebUrl,
+      browserGrant: this.state.dshWebGrant,
+      expiresAt: this.state.dshWebExpiresAt,
+      lan: this.state.dshWebLan,
+    })
   }
   private networkStatusSummary(): string {
     if (this.state.networkSections.length > 0 && this.state.networkSections[0].rows.length > 0) {
@@ -849,6 +914,11 @@ struct Index {
       this.openNetwork()
       return
     }
+    if (page === 'dshweb') {
+      this.showMore = false
+      void this.openDshWeb()
+      return
+    }
     this.panelPage = page
     if (page === 'skills') { this.send('skills', {}) }
     else if (page === 'files') { this.send('files', { id: '' }) }
@@ -891,7 +961,7 @@ struct Index {
           Button(runtime.translate(this.traceMode ? '返回对话' : '查看轨迹')).layoutWeight(1).height(40).fontSize(13)
             .backgroundColor(this.traceMode ? this.theme().primarySoft : this.theme().surfaceStrong)
             .fontColor(this.traceMode ? this.accentColor() : this.theme().ink).borderRadius(14)
-            .onClick(() => { this.showMore = false; this.traceMode = !this.traceMode; this.traceQuery = ''; this.traceCategory = 'all' })
+            .onClick(() => { this.showMore = false; this.toggleTrace() })
         }.width('100%')
         Row({ space: 8 }) {
           Button(runtime.translate('切换主机')).layoutWeight(1).height(40).fontSize(13)
@@ -923,6 +993,9 @@ struct Index {
         this.optionRow('💻', '终端', this.terminalValue(), 'terminal')
         this.optionRow('🤖', 'Bot 团队', this.state.bots.length > 0 ? `${this.state.bots.length} 个成员` : '查看', 'bots')
         this.optionRow('🌐', '网络与链路', this.networkStatusSummary(), 'network')
+        if (this.state.dshWebAvailable) {
+          this.optionRow('◫', 'DSH Web', this.state.dshWebTunnelAvailable ? '自动（LAN / Cloud）' : '局域网', 'dshweb')
+        }
         Row({ space: 12 }) {
           Text('⏱').fontSize(17).width(24).textAlign(TextAlign.Center).fontColor(this.state.accentColor)
           Text(runtime.translate('紧凑历史')).fontSize(15).layoutWeight(1)
@@ -1115,7 +1188,7 @@ struct Index {
   @Builder
   infoSheet() {
     Column({ space: 10 }) {
-      this.sheetTitle('对话与连接信息', false)
+      this.sheetTitle('会话信息', false)
       Scroll() {
         Column({ space: 10 }) {
           Text(runtime.translate('会话与工作区')).fontSize(13).fontWeight(FontWeight.Bold).fontColor(this.theme().muted).width('100%')
@@ -1142,6 +1215,17 @@ struct Index {
                 }, (row: NetworkRow) => `net|${row.label}|${row.value}`)
               }.width('100%').padding(10).borderRadius(12).backgroundColor(this.theme().surfaceStrong)
             }, (sec: NetworkSection) => `sec|${sec.title}`)
+          }
+          if (this.state.canArchiveSession) {
+            Row({ space: 12 }) {
+              Text(this.state.sessionArchived ? '↺' : '▣').fontSize(18).width(28)
+                .textAlign(TextAlign.Center).fontColor(this.theme().muted)
+              Text(runtime.translate(this.state.sessionArchived ? '取消归档' : '归档会话'))
+                .fontSize(15).layoutWeight(1).fontColor(this.state.sessionArchived ? this.theme().ink : this.theme().danger)
+            }.width('100%').height(50).padding({ left: 12, right: 12 })
+              .backgroundColor(this.theme().surfaceStrong).borderRadius(14)
+              .enabled(this.state.connected && !this.state.busy)
+              .onClick(() => { this.toggleCurrentArchive() })
           }
         }.width('100%')
       }.constraintSize({ maxHeight: 460 }).width('100%')
@@ -1848,6 +1932,49 @@ struct Index {
           .border({ width: 1, color: this.theme().separator })
           .onClick(() => { this.settingsPage = 'language' })
 
+        this.settingsSection('发送与账号')
+        Column() {
+          Row({ space: 12 }) {
+            Text('↑').fontSize(19).width(28).textAlign(TextAlign.Center).fontColor(this.theme().ink)
+            Column({ space: 3 }) {
+              Text(runtime.translate('运行中发送方式')).fontSize(16).lineHeight(22).fontColor(this.theme().ink).width('100%')
+              Text(runtime.translate(this.state.busySendMode === 'steer'
+                ? '直接插入当前对话，不进入排队'
+                : '先在输入框上方暂存，可点击插队'))
+                .fontSize(12).lineHeight(17).fontColor(this.theme().muted).width('100%').maxLines(2)
+            }.layoutWeight(1)
+            Text(this.busySendLabel()).fontSize(14).fontColor(this.theme().muted)
+            Text('›').fontSize(19).fontColor(this.theme().subtle)
+          }.width('100%').height(68).padding({ left: 14, right: 12 })
+            .onClick(() => { this.settingsPage = 'busySend' })
+          this.settingsDivider()
+          Row({ space: 12 }) {
+            Text('◇').fontSize(19).width(28).textAlign(TextAlign.Center).fontColor(this.theme().ink)
+            Column({ space: 3 }) {
+              Text(runtime.translate('会员状态')).fontSize(16).lineHeight(22).fontColor(this.theme().ink).width('100%')
+              if (this.state.membershipExpiresAt.length > 0) {
+                Text(runtime.translate('到期日期') + ' · ' + this.state.membershipExpiresAt)
+                  .fontSize(12).lineHeight(17).fontColor(this.theme().muted).width('100%')
+              }
+            }.layoutWeight(1)
+            Text(this.membershipLabel()).fontSize(14).fontColor(
+              this.state.membershipStatus === 'active' ? this.theme().success
+                : this.state.membershipStatus === 'expired' || this.state.membershipStatus === 'revoked' ? this.theme().danger
+                  : this.theme().muted)
+            if (this.state.membershipStatus === 'none' || this.state.membershipStatus === 'expired') {
+              Text('›').fontSize(19).fontColor(this.theme().subtle)
+            }
+          }.width('100%').height(64).padding({ left: 14, right: 12 })
+            .onClick(() => {
+              if (this.state.membershipStatus === 'none' || this.state.membershipStatus === 'expired') {
+                this.send('openMembership', {})
+              } else {
+                this.send('membership', {})
+              }
+            })
+        }.width('100%').backgroundColor(this.theme().grouped).borderRadius(22)
+          .border({ width: 1, color: this.theme().separator })
+
         this.settingsSection('工作区设置')
         Column() {
           Row({ space: 12 }) {
@@ -2031,6 +2158,7 @@ struct Index {
     if (field === 'density') return this.state.typographyDensity
     if (field === 'activity') return this.state.activityDockMode
     if (field === 'permission') return this.state.defaultPermission
+    if (field === 'busySend') return this.state.busySendMode
     return this.state.transportPreference
   }
 
@@ -2057,6 +2185,7 @@ struct Index {
                 else if (field === 'density') this.send('setDensity', { id: id, name: id })
                 else if (field === 'activity') this.send('setActivityDockMode', { name: id })
                 else if (field === 'transport') this.send('setTransportPreference', { mode: id })
+                else if (field === 'busySend') this.send('setBusySendMode', { mode: id })
                 else if (field === 'permission') {
                   if (id !== 'danger-full-access') {
                     this.send('setDefaultPermission', { name: id })
@@ -2151,6 +2280,7 @@ struct Index {
           : this.settingsPage === 'language' ? '语言'
             : this.settingsPage === 'density' ? '排版密度'
               : this.settingsPage === 'activity' ? '活动显示'
+                : this.settingsPage === 'busySend' ? '运行中发送方式'
                 : this.settingsPage === 'permission' ? '默认权限'
                   : this.settingsPage === 'transport' ? '传输策略'
                     : this.settingsPage === 'background' ? '后台连接'
@@ -2164,6 +2294,9 @@ struct Index {
         this.settingsChoicePage('调整正文行距、段间距与气泡紧凑度', ['standard','compact'], ['标准','紧凑'], 'density')
       } else if (this.settingsPage === 'activity') {
         this.settingsChoicePage('选择会话中活动卡的显示方式', ['compact','cards','hidden'], ['紧凑','卡片','隐藏'], 'activity')
+      } else if (this.settingsPage === 'busySend') {
+        this.settingsChoicePage('主机正在回复时，新消息默认排队或直接插入当前对话。',
+          ['queue','steer'], ['排队发送','插话发送'], 'busySend')
       } else if (this.settingsPage === 'permission') {
         this.settingsChoicePage('仅影响新建的 DSH / CodeX 对话，已有对话不变', ['default','workspace-write','danger-full-access'], ['默认','工作区读写','完全权限'], 'permission')
       } else if (this.settingsPage === 'transport') {
@@ -2297,6 +2430,59 @@ struct Index {
         this.homeHostFooter()
       }.width('100%').height('100%')
     }
+  }
+
+  /** Host-local DSH Web in an isolated ArkWeb surface with one-time bootstrap. */
+  @Builder
+  dshWebSheet() {
+    Column({ space: 0 }) {
+      Row({ space: 8 }) {
+        Button('‹').accessibilityText(runtime.translate('返回')).fontSize(24).width(42).height(42).padding(0)
+          .backgroundColor(this.theme().elevated).borderRadius(999)
+          .border({ width: 1, color: this.theme().separator }).fontColor(this.theme().ink)
+          .onClick(() => { this.closeDshWeb() })
+        Column({ space: 1 }) {
+          Text(runtime.translate('DSH Web')).fontSize(18).lineHeight(23).fontWeight(FontWeight.Bold)
+            .fontColor(this.theme().ink).width('100%').textAlign(TextAlign.Center).maxLines(1)
+          Text(this.state.dshWebUrl.length > 0
+            ? `${this.hostName()} · ${this.state.dshWebLan ? 'LAN' : 'Cloud'}`
+            : runtime.translate('正在建立安全会话'))
+            .fontSize(11).lineHeight(15).fontColor(this.theme().muted).width('100%').textAlign(TextAlign.Center).maxLines(1)
+        }.layoutWeight(1)
+        Button('⟳').accessibilityText(runtime.translate('重新打开')).fontSize(17).width(42).height(42).padding(0)
+          .backgroundColor(this.theme().elevated).borderRadius(999)
+          .border({ width: 1, color: this.theme().separator }).fontColor(this.theme().ink)
+          .enabled(!this.state.busy)
+          .onClick(() => { void this.openDshWeb() })
+      }.width('100%').height(62).padding({ left: 16, right: 16, top: 8, bottom: 8 })
+        .backgroundColor(this.theme().background)
+        .border({ width: { bottom: 1 }, color: this.theme().separator })
+      if (this.state.dshWebUrl.length > 0 && this.state.dshWebGrant.length > 0) {
+        DshWebView({
+          payload: this.dshWebPayload(),
+          surfaceColor: this.theme().background,
+          ink: this.theme().ink,
+          muted: this.theme().muted,
+          accent: this.accentColor(),
+          onReady: () => { this.dshWebError = '' },
+          onRetry: () => { void this.openDshWeb() },
+        }).layoutWeight(1).width('100%')
+      } else {
+        Column({ space: 14 }) {
+          if (this.state.busy && this.dshWebError.length === 0) {
+            LoadingProgress().width(30).height(30).color(this.accentColor())
+            Text(runtime.translate('正在建立 DSH Web 连接…')).fontSize(13).fontColor(this.theme().muted)
+          } else {
+            Text('⚠').fontSize(30).fontColor(this.theme().muted)
+            Text(this.dshWebError || runtime.translate('当前主机未提供 DSH Web')).fontSize(13).lineHeight(19)
+              .fontColor(this.theme().danger).textAlign(TextAlign.Center)
+            Button(runtime.translate('重试')).height(42).padding({ left: 24, right: 24 })
+              .backgroundColor(this.accentColor()).fontColor(this.theme().onPrimary).borderRadius(999)
+              .onClick(() => { void this.openDshWeb() })
+          }
+        }.layoutWeight(1).width('100%').justifyContent(FlexAlign.Center).padding(28)
+      }
+    }.width('100%').height('100%').backgroundColor(this.theme().background)
   }
 
   /** Android's 网络详情 panel: path, probe order, endpoints, RTT, bitrate, traffic. */
@@ -2777,12 +2963,16 @@ struct Index {
         .backgroundColor(this.theme().background)
     } else if (this.state.view === 'chat') {
       Row({ space: 10 }) {
-        Button(this.state.connected ? '☰' : '‹')
-          .accessibilityText(runtime.translate(this.state.connected ? '工作区与会话' : '返回'))
-          .fontSize(this.state.connected ? 20 : 24).width(42).height(42).padding(0).flexShrink(0)
+        Button(this.traceMode ? '‹' : (this.state.connected ? '☰' : '‹'))
+          .accessibilityText(runtime.translate(this.traceMode ? '返回对话' : (this.state.connected ? '工作区与会话' : '返回')))
+          .fontSize(this.traceMode || !this.state.connected ? 24 : 20).width(42).height(42).padding(0).flexShrink(0)
           .backgroundColor(this.theme().elevated).borderRadius(999)
           .border({ width: 1, color: this.theme().separator }).fontColor(this.theme().ink)
-          .onClick(() => { if (this.state.connected) this.openDrawer(); else this.invoke('back') })
+          .onClick(() => {
+            if (this.traceMode) this.toggleTrace()
+            else if (this.state.connected) this.openDrawer()
+            else this.invoke('back')
+          })
         Column({ space: 1 }) {
           Text(this.state.title).width('100%').fontSize(18).lineHeight(23).fontWeight(FontWeight.Bold)
             .fontColor(this.theme().ink).textAlign(TextAlign.Center).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
@@ -2793,12 +2983,16 @@ struct Index {
         }.alignItems(HorizontalAlign.Center).layoutWeight(1)
         if (this.state.connected) {
           Row({ space: 2 }) {
+            Button(this.traceMode ? '☰' : '＋')
+              .accessibilityText(runtime.translate(this.traceMode ? '返回对话' : '新建对话'))
+              .fontSize(this.traceMode ? 18 : 22).width(34).height(34).padding(0)
+              .backgroundColor(Color.Transparent)
+              .fontColor(this.traceMode ? this.accentColor() : this.theme().ink).borderRadius(999)
+              .enabled(this.traceMode || (!this.state.busy && !(this.state.sessionBlank && !this.composerHasContent())))
+              .onClick(() => { if (this.traceMode) this.toggleTrace(); else this.invoke('newSession') })
             Button('⋯').accessibilityText(runtime.translate('会话操作')).fontSize(19).width(34).height(34).padding(0)
               .backgroundColor(Color.Transparent).fontColor(this.theme().ink).borderRadius(999)
               .onClick(() => { this.openMore() })
-            Button('＋').accessibilityText(runtime.translate('新建对话')).fontSize(22).width(34).height(34).padding(0)
-              .backgroundColor(Color.Transparent).fontColor(this.theme().ink).borderRadius(999)
-              .enabled(!this.state.busy).onClick(() => { this.invoke('newSession') })
           }.height(42).padding({ left: 4, right: 4 }).flexShrink(0)
             .backgroundColor(this.theme().elevated).borderRadius(999)
             .border({ width: 1, color: this.theme().separator })
@@ -2827,7 +3021,7 @@ struct Index {
         Column({ space: 1 }) {
           Text(this.state.title).width('100%').fontSize(17).lineHeight(22).fontWeight(FontWeight.Bold)
             .fontColor(this.theme().ink).textAlign(TextAlign.Center).maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
-          Text(runtime.translate(this.state.connected || this.state.recovering ? this.state.status : 'HarmonyOS · 0.6.5 移植预览'))
+          Text(runtime.translate(this.state.connected || this.state.recovering ? this.state.status : 'HarmonyOS · 0.6.7 移植预览'))
             .width('100%').textAlign(TextAlign.Center)
             .maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
             .fontSize(this.typography().captionSize).lineHeight(this.typography().captionLineHeight)
@@ -2856,24 +3050,46 @@ struct Index {
           TextInput({ text: this.server, placeholder: runtime.translate('服务器 HTTPS 地址') })
             .height(52).fontSize(this.typography().bodySize).fontColor(this.theme().ink).placeholderColor(this.theme().muted)
             .backgroundColor(this.theme().surface).border({ width: 1, color: this.theme().border }).borderRadius(16)
+            .enabled(!this.state.twoFactorRequired)
             .onChange((value: string) => { this.server = value })
-          TextInput({ text: this.email, placeholder: runtime.translate('邮箱') }).type(InputType.Email)
-            .height(52).fontSize(this.typography().bodySize).fontColor(this.theme().ink).placeholderColor(this.theme().muted)
-            .backgroundColor(this.theme().surface).border({ width: 1, color: this.theme().border }).borderRadius(16)
-            .onChange((value: string) => { this.email = value })
-          TextInput({ text: this.password, placeholder: runtime.translate('密码') }).type(InputType.Password)
-            .height(52).fontSize(this.typography().bodySize).fontColor(this.theme().ink).placeholderColor(this.theme().muted)
-            .backgroundColor(this.theme().surface).border({ width: 1, color: this.theme().border }).borderRadius(16)
-            .onChange((value: string) => { this.password = value })
-          Button(runtime.translate('登录并注册本机')).width('100%').height(50)
-            .fontSize(this.typography().bodySize).fontWeight(FontWeight.Medium)
-            .backgroundColor(this.state.accentColor).fontColor(this.theme().onPrimary).borderRadius(999)
-            .enabled(!this.state.busy && this.email.length > 0 && this.password.length > 0)
-            .onClick(() => {
-              const password: string = this.password
-              this.password = ''
-              runtime.perform('login', JSON.stringify({ server: this.server, email: this.email, password: password })).catch(() => {})
-            })
+          if (this.state.twoFactorRequired) {
+            Text(this.email).fontSize(this.typography().smallSize).fontColor(this.theme().muted).width('100%')
+            TextInput({ text: this.twoFactorCode, placeholder: runtime.translate('身份验证器验证码') })
+              .height(52).fontSize(this.typography().bodySize).fontColor(this.theme().ink).placeholderColor(this.theme().muted)
+              .backgroundColor(this.theme().surface).border({ width: 1, color: this.theme().border }).borderRadius(16)
+              .onChange((value: string) => { this.twoFactorCode = value.slice(0, 64) })
+            Button(runtime.translate('验证并登录')).width('100%').height(50)
+              .fontSize(this.typography().bodySize).fontWeight(FontWeight.Medium)
+              .backgroundColor(this.state.accentColor).fontColor(this.theme().onPrimary).borderRadius(999)
+              .enabled(!this.state.busy && this.twoFactorCode.trim().length > 0)
+              .onClick(() => {
+                const code: string = this.twoFactorCode
+                this.twoFactorCode = ''
+                runtime.perform('verifyTwoFactor', JSON.stringify({ code: code } as ActionInput)).catch(() => {})
+              })
+            Button(runtime.translate('返回重新输入密码')).width('100%').height(42)
+              .backgroundColor(Color.Transparent).fontColor(this.theme().muted)
+              .enabled(!this.state.busy)
+              .onClick(() => { this.twoFactorCode = ''; runtime.perform('cancelTwoFactor', '{}').catch(() => {}) })
+          } else {
+            TextInput({ text: this.email, placeholder: runtime.translate('邮箱') }).type(InputType.Email)
+              .height(52).fontSize(this.typography().bodySize).fontColor(this.theme().ink).placeholderColor(this.theme().muted)
+              .backgroundColor(this.theme().surface).border({ width: 1, color: this.theme().border }).borderRadius(16)
+              .onChange((value: string) => { this.email = value })
+            TextInput({ text: this.password, placeholder: runtime.translate('密码') }).type(InputType.Password)
+              .height(52).fontSize(this.typography().bodySize).fontColor(this.theme().ink).placeholderColor(this.theme().muted)
+              .backgroundColor(this.theme().surface).border({ width: 1, color: this.theme().border }).borderRadius(16)
+              .onChange((value: string) => { this.password = value })
+            Button(runtime.translate('登录并注册本机')).width('100%').height(50)
+              .fontSize(this.typography().bodySize).fontWeight(FontWeight.Medium)
+              .backgroundColor(this.state.accentColor).fontColor(this.theme().onPrimary).borderRadius(999)
+              .enabled(!this.state.busy && this.email.length > 0 && this.password.length > 0)
+              .onClick(() => {
+                const password: string = this.password
+                this.password = ''
+                runtime.perform('login', JSON.stringify({ server: this.server, email: this.email, password: password })).catch(() => {})
+              })
+          }
         }.padding(20).borderRadius(22).backgroundColor(this.theme().card)
           .border({ width: 1, color: this.theme().separator }).width('100%')
         Text(runtime.translate('或使用网页 OAuth 授权登录')).fontSize(this.typography().smallSize)
@@ -3705,23 +3921,20 @@ struct Index {
             .backgroundColor(this.theme().surface).borderRadius(16)
             .border({ width: 1, color: this.theme().separator })
         }
-        if (this.state.uploadProgress.length > 0) {
-          Row({ space: 8 }) {
-            Text(this.state.uploadProgress).fontSize(12).fontColor(this.theme().muted).layoutWeight(1).maxLines(2)
-            Button(runtime.translate('取消')).height(30).fontSize(11).backgroundColor(Color.Transparent).fontColor(this.theme().danger)
-              .onClick(() => { this.send('cancelUpload', {}) })
-          }.width('100%').padding({ left: 4, right: 4 })
-        }
-        if (this.state.running) {
-          Row({ space: 8 }) {
-            LoadingProgress().width(16).height(16).color(this.accentColor())
-            Text(runtime.translate('主机正在回复')).fontSize(12).fontColor(this.accentColor()).layoutWeight(1)
-            Button(runtime.translate('停止')).height(34).fontSize(12)
-              .backgroundColor(this.theme().surfaceStrong).fontColor(this.theme().ink).borderRadius(999)
-              .onClick(() => { this.invoke('interrupt') })
-          }.width('100%').padding({ left: 4, right: 4 })
-        }
         Column({ space: 6 }) {
+          if (this.state.uploadProgress.length > 0) {
+            Row({ space: 8 }) {
+              Text(this.state.uploadProgress).fontSize(12).fontColor(this.theme().muted).layoutWeight(1).maxLines(2)
+              Button(runtime.translate('取消')).height(30).fontSize(11).backgroundColor(Color.Transparent).fontColor(this.theme().danger)
+                .onClick(() => { this.send('cancelUpload', {}) })
+            }.width('100%').padding({ left: 4, right: 4 })
+          }
+          if (this.state.running) {
+            Row({ space: 8 }) {
+              LoadingProgress().width(16).height(16).color(this.accentColor())
+              Text(runtime.translate('主机正在回复')).fontSize(12).fontColor(this.accentColor()).layoutWeight(1)
+            }.width('100%').padding({ left: 4, right: 4 })
+          }
           if (this.showModels) {
             Column({ space: 10 }) {
               Text(runtime.translate('模型')).fontSize(13).lineHeight(18).fontWeight(FontWeight.Medium)
@@ -3784,9 +3997,11 @@ struct Index {
             Button('＋').accessibilityText(runtime.translate('更多操作')).width(36).height(36).padding(0).fontSize(21)
               .fontColor(this.theme().ink).backgroundColor(this.theme().surfaceStrong).borderRadius(18)
               .onClick(() => { this.openMore() }).enabled(!this.state.busy && this.state.connected)
-            Button('⚡').accessibilityText(runtime.translate('快捷提示词')).width(36).height(36).padding(0).fontSize(16)
-              .fontColor(this.theme().ink).backgroundColor(this.theme().surfaceStrong).borderRadius(18)
-              .enabled(!this.state.busy && this.state.connected).onClick(() => { this.openPrompts() })
+            if (!this.state.running) {
+              Button('⚡').accessibilityText(runtime.translate('快捷提示词')).width(36).height(36).padding(0).fontSize(16)
+                .fontColor(this.theme().ink).backgroundColor(this.theme().surfaceStrong).borderRadius(18)
+                .enabled(!this.state.busy && this.state.connected).onClick(() => { this.openPrompts() })
+            }
             if (this.state.models.length > 0) {
               Button(this.state.models[this.selectedModel]?.name ?? runtime.translate('模型'))
                 .layoutWeight(1).height(36).padding({ left: 12, right: 8 }).fontSize(13)
@@ -3799,30 +4014,46 @@ struct Index {
             Button(this.expandedComposer ? '⌄' : '⤢').accessibilityText(runtime.translate(this.expandedComposer ? '收起输入' : '展开输入'))
               .width(32).height(36).padding(0).fontSize(16).fontColor(this.theme().muted).backgroundColor(Color.Transparent)
               .onClick(() => { this.expandedComposer = !this.expandedComposer })
-            Button('↑').accessibilityText(runtime.translate('发送')).width(38).height(38).padding(0).fontSize(21).fontWeight(FontWeight.Medium)
-              .backgroundColor(this.state.connected && !this.state.busy && (this.draft.trim().length > 0 || this.image.length > 0 || this.state.stagedFiles.length > 0) ? this.accentColor() : this.theme().surfaceStrong)
-              .fontColor(this.state.connected && !this.state.busy && (this.draft.trim().length > 0 || this.image.length > 0 || this.state.stagedFiles.length > 0) ? this.theme().onPrimary : this.theme().subtle)
-              .borderRadius(19)
-              .enabled(this.state.connected && !this.state.busy && (this.state.botTarget.length === 0 || this.state.botReadOnly.length === 0) && (this.draft.trim().length > 0 || this.image.length > 0 || this.state.stagedFiles.length > 0))
-              .onClick(() => {
-                const text: string = this.draft
-                const failedCount: number = this.state.failedSends.length
-                const image: string = this.image
-                const images: PromptAttachment[] = this.promptImages.map((value: PromptAttachment): PromptAttachment => ({ data: value.data, mediaType: value.mediaType }))
-                runtime.perform('prompt', JSON.stringify({ text: text, images: images }))
-                  .then((success: boolean) => {
-                    const retained: boolean = this.state.failedSends.length > failedCount
-                    if ((success || retained) && this.draft === text) this.draft = ''
-                    if ((success || retained) && this.image === image) { this.image = ''; this.promptImages = [] }
-                    if (success || retained) runtime.perform('saveDraft', JSON.stringify({ id: this.lastSession, text: '' } as ActionInput)).catch(() => {})
-                  }).catch(() => {})
-              })
+            if (this.state.running && !this.composerHasContent()) {
+              Button('■').accessibilityText(runtime.translate('停止')).width(38).height(38).padding(0).fontSize(15)
+                .backgroundColor(this.theme().ink).fontColor(this.theme().background).borderRadius(19)
+                .onClick(() => { this.invoke('interrupt') })
+            } else {
+              if (this.state.running) {
+                Button('■').accessibilityText(runtime.translate('停止')).width(34).height(34).padding(0).fontSize(13)
+                  .backgroundColor(this.theme().ink).fontColor(this.theme().background).borderRadius(17)
+                  .onClick(() => { this.invoke('interrupt') })
+              }
+              Button('↑').accessibilityText(runtime.translate('发送')).width(38).height(38).padding(0).fontSize(21).fontWeight(FontWeight.Medium)
+                .backgroundColor(this.state.connected && !this.state.busy && this.composerHasContent() ? this.accentColor() : this.theme().surfaceStrong)
+                .fontColor(this.state.connected && !this.state.busy && this.composerHasContent() ? this.theme().onPrimary : this.theme().subtle)
+                .borderRadius(19)
+                .enabled(this.state.connected && !this.state.busy && (this.state.botTarget.length === 0 || this.state.botReadOnly.length === 0) && this.composerHasContent())
+                .onClick(() => {
+                  const text: string = this.draft
+                  const failedCount: number = this.state.failedSends.length
+                  const image: string = this.image
+                  const images: PromptAttachment[] = this.promptImages.map((value: PromptAttachment): PromptAttachment => ({ data: value.data, mediaType: value.mediaType }))
+                  runtime.perform('prompt', JSON.stringify({ text: text, images: images }))
+                    .then((success: boolean) => {
+                      const retained: boolean = this.state.failedSends.length > failedCount
+                      if ((success || retained) && this.draft === text) this.draft = ''
+                      if ((success || retained) && this.image === image) { this.image = ''; this.promptImages = [] }
+                      if (success || retained) runtime.perform('saveDraft', JSON.stringify({ id: this.lastSession, text: '' } as ActionInput)).catch(() => {})
+                    }).catch(() => {})
+                })
+            }
           }.width('100%').alignItems(VerticalAlign.Center)
         }.padding({ left: 10, right: 10, top: 8, bottom: 8 }).width('100%')
           .backgroundColor(this.theme().surface).border({ width: 1, color: this.theme().separator })
           .borderRadius(22).shadow({ radius: 10, color: this.theme().separator, offsetX: 0, offsetY: 3 })
         Text(this.policyHint()).fontSize(10).lineHeight(14).fontColor(this.theme().subtle).textAlign(TextAlign.Center).width('100%')
-      }.width('100%').padding({ left: 16, right: 16, top: 4, bottom: Math.max(8, this.bottomSafeHeight + 8) })
+      }.width('100%').padding({
+        left: 16,
+        right: 16,
+        top: this.expandedComposer ? 12 : 4,
+        bottom: Math.max(this.expandedComposer ? 20 : 8, this.bottomSafeHeight + (this.expandedComposer ? 20 : 8)),
+      })
     }.width('100%').layoutWeight(1)
   }
 
@@ -3871,6 +4102,7 @@ struct Index {
         }.padding(20).width('100%').backgroundColor(this.theme().background).borderRadius({ topLeft: 28, topRight: 28 })
       }
       if (this.pageWidth < 840 && this.drawerOpen && this.state.connected) { this.drawer() }
+      if (this.showDshWeb) { this.dshWebSheet() }
       if (this.alignmentPanel.length > 0 || this.showMore || this.showPromptForm || this.showPrompts || this.manageTarget !== undefined
         || this.showChildren || this.showInfo || this.showPlugins || this.showPluginForm
         || this.showTasks || this.showRecords || this.showSettings || this.showTerminal || this.showBots || this.showNetwork) {

@@ -1,3 +1,4 @@
+export { DirectPreferredRace } from './direct-preferred-race.js'
 import { waitForRelayCapacity } from './websocket-backpressure.js'
 import {
   PROTOCOL_VERSION,
@@ -23,6 +24,7 @@ export * from './rtc-adapter.js'
 export * from './rtc-chunking.js'
 export * from './rtc-data-channel.js'
 export * from './adaptive-transport.js'
+export * from './upgraded-rtc-transport.js'
 
 export interface RelayTransportOptions {
   role: 'client'

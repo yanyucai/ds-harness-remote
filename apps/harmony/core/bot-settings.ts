@@ -1,5 +1,5 @@
-import { object, objects, text, type BotState } from '../../android/src/services/bot-catalog'
-import { DS_BOT_CONNECTOR_CATALOG, DS_BOT_IM_PLATFORMS, buildDsBotUsageView, type UsageRangeId } from '../../android/src/screens/bot/ds-bot-usage-data'
+import { object, objects, text, type BotState } from '../../../packages/app-core/src/services/bot-catalog'
+import { DS_BOT_CONNECTOR_CATALOG, DS_BOT_IM_PLATFORMS, buildDsBotUsageView, type UsageRangeId } from '../../../packages/app-core/src/screens/bot/ds-bot-usage-data'
 export interface BotSettingsRow { id: string; title: string; text: string; state: string }
 const labels: Record<string,string> = { thinking:'显示思考', enterToSend:'回车发送', motion:'动画风格', defaultModel:'默认模型', workDir:'工作目录', status:'状态', connected:'已连接', enabled:'已启用', available:'可用', name:'名称', model:'模型', provider:'服务商', tools:'工具', description:'说明', channel:'渠道', platform:'平台', permission:'权限', scope:'范围', title:'标题' }
 const summary = (raw: unknown): string => Object.entries(object(raw)).filter(([key,value]) => key in labels && (typeof value === 'string' || typeof value === 'boolean' || typeof value === 'number')).map(([key,value])=>`${labels[key]}：${String(value)}`).join('\n')

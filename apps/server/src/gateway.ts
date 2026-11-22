@@ -35,7 +35,7 @@ export interface GatewayOptions extends GatewayTimingOptions {
  */
 type ConnectionState = 'awaiting_hello' | 'authenticated' | 'closing' | 'closed'
 
-type Peer = { ws: WebSocket; id: string; role: 'host' | 'client'; capabilities: string[]; version: string; lastPong: number; nonce?: string; evictedTombstoneUntil?: number }
+type Peer = { ws: WebSocket; id: string; role: 'host' | 'client'; capabilities: string[]; version: string; lastPong: number; pendingNonces: string[]; evictedTombstoneUntil?: number }
 type Link = { id: string; host: string; client: string; stage: 'pending' | 'accepted' | 'handshake' | 'ready'; created: number; counters: Map<string, number>; preferredTransports: TransportName[]; iceCandidates: number }
 type DroppedLink = { host: string; client: string; expiresAt: number; droppedFrames: number }
 
@@ -46,8 +46,10 @@ const MAX_DROPPED_LINKS = 16_384
 
 /** Protocol v1 default: at most 256 ICE candidates per logical connection. */
 export const MAX_ICE_CANDIDATES_PER_CONNECTION = 256
-/** Mirrors docs/protocol.md: Clients use max(server, local) and default to 12 s. */
+/** Default fallback budget when TURN is enabled (or WebRTC is disabled). */
 const WEBRTC_FALLBACK_TIMEOUT_MS = 12_000
+/** Shorter fallback budget when only direct LAN/P2P paths are available without TURN. */
+const DIRECT_ONLY_WEBRTC_FALLBACK_TIMEOUT_MS = 3_000
 const SUPPORTED_TRANSPORTS = ['transport.lan', 'transport.p2p', 'transport.turn', 'transport.relay'] as const
 const TRANSPORT_NAMES = ['lan', 'p2p', 'turn', 'relay'] as const
 type TransportName = (typeof TRANSPORT_NAMES)[number]
@@ -132,6 +134,8 @@ export class Gateway {
     this.maxFramesPerSec = normalizeMaxFramesPerSec(options.maxFramesPerSec)
     this.logger = options.logger ?? new Logger('gateway', options.logLevel ?? 'info')
     this.turnEnabled = options.turnEnabled === true
+    const publicUrl = new URL(origin)
+    const portlessOrigin = publicUrl.port === '' ? undefined : `${publicUrl.protocol}//${publicUrl.hostname}`
 
     store.onInvalidate = id => this.disconnect(id, 'AUTH_INVALID')
     server.on('upgrade', (req, socket, head) => {
@@ -139,7 +143,12 @@ export class Gateway {
       // The route still requires an exact match: a query string is rejected
       // (exactly as before) but only its parsed pathname is ever logged.
       const pathRejected = req.url !== '/ws/v1/connect'
-      const originRejected = Boolean(req.headers.origin) && req.headers.origin !== origin
+      const requestOrigin = req.headers.origin
+      // HarmonyOS NetStack omits the port from its generated Origin. Browser
+      // WebSocket clients cannot set the companion header.
+      const harmonyOrigin = portlessOrigin !== undefined && requestOrigin === portlessOrigin
+        && req.headers['x-dsh-native-origin'] === origin
+      const originRejected = Boolean(requestOrigin) && requestOrigin !== origin && !harmonyOrigin
       if (pathRejected || originRejected || this.wss.clients.size >= 256) {
         this.logger.warn('ws_upgrade_rejected', {
           // Parsed pathname only: the raw URL may carry credentials in its query.
@@ -172,8 +181,10 @@ export class Gateway {
           this.disconnect(peer.id, 'CONNECTION_FAILED')
           continue
         }
-        peer.nonce = randomUUID()
-        this.send(peer, createControlFrame('ping', { nonce: peer.nonce }))
+        const nonce = randomUUID()
+        peer.pendingNonces.push(nonce)
+        if (peer.pendingNonces.length > 2) peer.pendingNonces.shift()
+        this.send(peer, createControlFrame('ping', { nonce }))
       }
       for (const link of this.links.values()) {
         if (link.stage !== 'ready' && Date.now() - link.created > 30_000) this.drop(link, 'CONNECTION_FAILED')
@@ -287,15 +298,20 @@ export class Gateway {
   }
 
   /**
-   * Authorize a REST `/api/v1/turn/credentials` request. Only the two devices
-   * of an active logical connection may obtain credentials, and only while
-   * that connection is still being established.
+   * Authorize a REST `/api/v1/turn/credentials` request. Only the two live
+   * devices of an active logical connection may obtain credentials: either
+   * while the connection is being established (`accepted`/`handshake`) or
+   * during an authenticated in-band transport upgrade (`ready`) when the link
+   * negotiated at least one WebRTC transport (`lan`/`p2p`/`turn`).
    */
   authorizeIce(deviceId: string, connectionId: string): boolean {
     const link = this.links.get(connectionId)
     if (link === undefined) return false
     if (link.host !== deviceId && link.client !== deviceId) return false
-    if (link.stage !== 'accepted' && link.stage !== 'handshake') return false
+    if (link.stage === 'pending') return false
+    if (link.stage === 'ready' && !link.preferredTransports.some(transport => transport !== 'relay')) {
+      return false
+    }
     return this.peers.has(link.host) && this.peers.has(link.client)
   }
   private supportedCapabilities(): string[] {
@@ -427,7 +443,7 @@ export class Gateway {
           // Keep the negotiated set (what hello.ack advertises), so a link can
           // never coordinate a transport this Server did not offer — e.g. TURN
           // while no TURN deployment is configured.
-          peer = { ws, id: device.deviceId, role: device.role, capabilities: this.negotiatedCapabilities(p.capabilities), version: p.clientVersion ?? device.clientVersion, lastPong: Date.now() }
+          peer = { ws, id: device.deviceId, role: device.role, capabilities: this.negotiatedCapabilities(p.capabilities), version: p.clientVersion ?? device.clientVersion, lastPong: Date.now(), pendingNonces: [] }
           this.peers.set(peer.id, peer)
           this.store.touch(peer.id, p.clientVersion, p.harnessVersion)
           this.logger.info('ws_hello_authenticated', {
@@ -436,6 +452,11 @@ export class Gateway {
             clientVersion: safeText(peer.version),
             capabilities: peer.capabilities.filter(capability => typeof capability === 'string' && SAFE_TEXT.test(capability)).slice(0, 8),
           })
+          const webrtcEnabled = peer.capabilities.some(capability =>
+            capability === 'transport.lan' || capability === 'transport.p2p' || capability === 'transport.turn')
+          const webrtcFallbackTimeoutMs = webrtcEnabled && !this.turnEnabled
+            ? DIRECT_ONLY_WEBRTC_FALLBACK_TIMEOUT_MS
+            : WEBRTC_FALLBACK_TIMEOUT_MS
           this.send(peer, createControlFrame('hello.ack', {
             protocol: 1,
             serverVersion: 'self-hosted/0.1.0',
@@ -443,9 +464,9 @@ export class Gateway {
             heartbeatIntervalMs: this.heartbeatIntervalMs,
             maxControlFrameBytes: MAX_CONTROL_FRAME_BYTES,
             maxRelayFrameBytes: MAX_RELAY_FRAME_BYTES,
-            capabilities: this.negotiatedCapabilities(p.capabilities),
-            webrtcEnabled: true,
-            webrtcFallbackTimeoutMs: WEBRTC_FALLBACK_TIMEOUT_MS,
+            capabilities: peer.capabilities,
+            webrtcEnabled,
+            webrtcFallbackTimeoutMs,
           }))
           return
         }
@@ -495,7 +516,14 @@ export class Gateway {
     const p = frame.payload as Record<string, unknown>
     if (frame.type === 'ping') { this.send(peer, createControlFrame('pong', { nonce: p.nonce })); return }
     if (frame.type === 'pong') {
-      if (peer.nonce && p.nonce === peer.nonce) { peer.lastPong = Date.now(); peer.nonce = undefined }
+      const nonce = typeof p.nonce === 'string' ? p.nonce : undefined
+      if (nonce !== undefined) {
+        const index = peer.pendingNonces.indexOf(nonce)
+        if (index !== -1) {
+          peer.lastPong = Date.now()
+          peer.pendingNonces.splice(0, index + 1)
+        }
+      }
       return
     }
     if (frame.type === 'connect.request') {
@@ -636,6 +664,10 @@ export class Gateway {
     this.closed = true
     clearInterval(this.heartbeat)
     this.logger.info('ws_gateway_closing', { clientCount: this.wss.clients.size })
+    // A planned shutdown must not report each closing peer as CONNECTION_FAILED.
+    this.peers.clear()
+    this.links.clear()
+    this.droppedLinks.clear()
     for (const ws of this.wss.clients) {
       // Give resumable clients an explicit, unambiguous shutdown signal. A
       // process restart is different from heartbeat failure (4001) and from
